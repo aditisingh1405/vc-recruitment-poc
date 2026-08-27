@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Apply · VC Recruitment</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body data-page="apply">
+  <header class="site">
+    <span class="brand">VC Recruitment</span>
+    <nav>
+      <a href="jobs.html" class="active">Open roles</a>
+      <a href="recruiter.html">Recruiter</a>
+      <a href="/docs">API</a>
+    </nav>
+  </header>
+  <main>
+    <h1>Apply</h1>
+    <p class="lede">Upload your resume as a PDF. We'll extract your details and score your fit for this role.</p>
+    <div id="banner" class="banner"></div>
+    <div id="job-summary"></div>
+
+    <form id="apply-form" class="card">
+      <h2>Your application</h2>
+      <div class="row">
+        <div>
+          <label for="full_name">Full name <span class="hint">— optional, read from the resume if blank</span></label>
+          <input id="full_name" name="full_name" type="text" autocomplete="name">
+        </div>
+        <div>
+          <label for="email">Email <span class="hint">— optional, read from the resume if blank</span></label>
+          <input id="email" name="email" type="email" autocomplete="email">
+        </div>
+      </div>
+      <label for="resume">Resume <span class="hint">— PDF, max 5 MB, text-based (not a scan)</span></label>
+      <input id="resume" name="resume" type="file" accept="application/pdf" required>
+      <p></p>
+      <button type="submit">Submit application</button>
+    </form>
+
+    <div id="result"></div>
+  </main>
+  <script src="app.js"></script>
+</body>
+</html>

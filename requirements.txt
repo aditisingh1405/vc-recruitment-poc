@@ -3,7 +3,7 @@ uvicorn[standard]
 sqlalchemy
 psycopg[binary]
 alembic
-pydantic
+pydantic[email]
 pydantic-settings
 python-multipart
 python-dotenv

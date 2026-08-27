@@ -1,0 +1,136 @@
+from datetime import datetime
+from typing import List, Optional
+
+from pydantic import BaseModel, ConfigDict, EmailStr, Field
+
+ORM = ConfigDict(from_attributes=True)
+
+
+# --------------------------------------------------------------------------
+# Jobs
+# --------------------------------------------------------------------------
+class JobBase(BaseModel):
+    title: str = Field(min_length=1, max_length=200)
+    description: str = Field(min_length=1)
+    location: Optional[str] = Field(default=None, max_length=120)
+    employment_type: Optional[str] = Field(default=None, max_length=50)
+    required_skills: List[str] = Field(default_factory=list)
+    min_years_experience: int = Field(default=0, ge=0, le=60)
+
+
+class JobCreate(JobBase):
+    pass
+
+
+class JobUpdate(BaseModel):
+    title: Optional[str] = Field(default=None, min_length=1, max_length=200)
+    description: Optional[str] = Field(default=None, min_length=1)
+    location: Optional[str] = Field(default=None, max_length=120)
+    employment_type: Optional[str] = Field(default=None, max_length=50)
+    required_skills: Optional[List[str]] = None
+    min_years_experience: Optional[int] = Field(default=None, ge=0, le=60)
+    is_open: Optional[bool] = None
+
+
+class JobRead(JobBase):
+    model_config = ORM
+
+    id: int
+    is_open: bool
+    created_at: datetime
+
+
+class JobSummary(BaseModel):
+    """Job fields embedded in an application row."""
+
+    model_config = ORM
+
+    id: int
+    title: str
+    location: Optional[str] = None
+
+
+# --------------------------------------------------------------------------
+# Candidates
+# --------------------------------------------------------------------------
+class CandidateRead(BaseModel):
+    model_config = ORM
+
+    id: int
+    full_name: str
+    email: EmailStr
+    phone: Optional[str] = None
+    location: Optional[str] = None
+    years_experience: Optional[float] = None
+    skills: List[str] = Field(default_factory=list)
+    education: List[str] = Field(default_factory=list)
+    summary: Optional[str] = None
+    resume_filename: Optional[str] = None
+    created_at: datetime
+
+
+class CandidateSummary(BaseModel):
+    """Candidate fields embedded in an application row."""
+
+    model_config = ORM
+
+    id: int
+    full_name: str
+    email: EmailStr
+    years_experience: Optional[float] = None
+    skills: List[str] = Field(default_factory=list)
+
+
+class ResumeExtract(BaseModel):
+    """What llm_service pulls out of resume text. Every field is optional --
+    resumes are messy and a missing phone number shouldn't fail the upload."""
+
+    full_name: Optional[str] = None
+    email: Optional[EmailStr] = None
+    phone: Optional[str] = None
+    location: Optional[str] = None
+    years_experience: Optional[float] = Field(default=None, ge=0, le=60)
+    skills: List[str] = Field(default_factory=list)
+    education: List[str] = Field(default_factory=list)
+    summary: Optional[str] = None
+
+
+# --------------------------------------------------------------------------
+# Applications
+# --------------------------------------------------------------------------
+class ScreeningResult(BaseModel):
+    """The suitability verdict for one candidate against one job."""
+
+    score: int = Field(ge=0, le=100)
+    verdict: str
+    reasoning: str
+    matched_skills: List[str] = Field(default_factory=list)
+    missing_skills: List[str] = Field(default_factory=list)
+
+
+class ApplicationUpdate(BaseModel):
+    status: Optional[str] = None
+
+
+class ApplicationRead(BaseModel):
+    model_config = ORM
+
+    id: int
+    job_id: int
+    candidate_id: int
+    status: str
+    score: Optional[int] = None
+    verdict: Optional[str] = None
+    reasoning: Optional[str] = None
+    matched_skills: List[str] = Field(default_factory=list)
+    missing_skills: List[str] = Field(default_factory=list)
+    screened_by: Optional[str] = None
+    created_at: datetime
+
+
+class ApplicationDetail(ApplicationRead):
+    """An application with its job and candidate inlined -- what the recruiter
+    dashboard renders."""
+
+    job: JobSummary
+    candidate: CandidateSummary

@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Recruiter · VC Recruitment</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body data-page="recruiter">
+  <header class="site">
+    <span class="brand">VC Recruitment</span>
+    <nav>
+      <a href="jobs.html">Open roles</a>
+      <a href="recruiter.html" class="active">Recruiter</a>
+      <a href="/docs">API</a>
+    </nav>
+  </header>
+  <main>
+    <h1>Recruiter</h1>
+    <p class="lede">Post a role, then review applicants ranked by fit.</p>
+    <div id="banner" class="banner"></div>
+
+    <form id="job-form" class="card">
+      <h2>Post a role</h2>
+      <div id="form-banner" class="banner"></div>
+      <label for="title">Title</label>
+      <input id="title" name="title" type="text" required placeholder="Senior Investment Associate">
+      <label for="description">Description</label>
+      <textarea id="description" name="description" required placeholder="What the role involves, the team, the mandate…"></textarea>
+      <div class="row">
+        <div>
+          <label for="location">Location</label>
+          <input id="location" name="location" type="text" placeholder="San Francisco, CA">
+        </div>
+        <div>
+          <label for="employment_type">Employment type</label>
+          <input id="employment_type" name="employment_type" type="text" placeholder="Full-time">
+        </div>
+        <div>
+          <label for="min_years_experience">Min. years</label>
+          <input id="min_years_experience" name="min_years_experience" type="number" min="0" max="60" value="0">
+        </div>
+      </div>
+      <label for="required_skills">Required skills <span class="hint">— comma separated</span></label>
+      <input id="required_skills" name="required_skills" type="text" placeholder="financial modeling, due diligence, valuation, Python">
+      <p></p>
+      <button type="submit">Post role</button>
+    </form>
+
+    <h2>Applicants</h2>
+    <label for="job-picker">Role</label>
+    <select id="job-picker"></select>
+    <p></p>
+    <div id="applicants"></div>
+  </main>
+  <script src="app.js"></script>
+</body>
+</html>
