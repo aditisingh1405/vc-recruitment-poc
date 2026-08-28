@@ -18,7 +18,7 @@ class Settings(BaseSettings):
 
     groq_api_key: str = ""
     groq_base_url: str = "https://api.groq.com/openai/v1"
-    groq_model: str = "llama-3.3-70b-versatile"
+    groq_model: str = "openai/gpt-oss-120b"
 
     upload_dir: Path = BASE_DIR / "uploads"
     max_resume_bytes: int = 5 * 1024 * 1024
