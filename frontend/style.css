@@ -199,7 +199,7 @@ a.button {
 .muted { color: var(--muted); }
 .spinner { color: var(--muted); padding: 24px 0; text-align: center; }
 
-/* ---- Drive candidates ---- */
+/* ---- Resumes (Google Drive) ---- */
 .toolbar {
   display: flex;
   flex-wrap: wrap;

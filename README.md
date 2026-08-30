@@ -97,10 +97,10 @@ uvicorn app.main:app --reload
 Candidates are keyed by email: re-uploading under the same address updates that
 candidate, and re-applying to the same role re-screens rather than duplicating.
 
-## Google Drive candidates
+## Resumes (Google Drive)
 
 A read-only browser for resumes that live in a shared Drive folder, reached
-from the **Drive candidates** tab. It is deliberately stateless:
+from the **Resumes** tab. It is deliberately stateless:
 
 - resumes are streamed into memory, parsed and discarded -- nothing is written
   to `uploads/`;
