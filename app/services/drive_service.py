@@ -1,12 +1,21 @@
 """Browse resumes that live in a shared Google Drive folder.
 
-Deliberately stateless. Files are streamed into memory, parsed, and discarded:
-nothing is written to uploads/, and nothing is written to the database. The
-only thing that outlives a request is a short-lived in-process cache, so
-opening the page twice doesn't refetch and re-bill every resume.
+Two stages, deliberately separate:
 
-Auth mirrors the resume_parser POC: a read-only service account key, with the
-Drive folder shared to that account's address.
+  1. Read and parse. Walk the folder, stream each file into memory, and turn
+     it into a JSON record -- metadata plus plain text. No LLM is involved, so
+     this is fast, free, and never rate limited. Records are cached per file,
+     keyed on the Drive modifiedTime, so an unchanged resume is downloaded and
+     parsed exactly once.
+
+  2. Display. Only when a candidate's details are actually shown does the LLM
+     run over that document's cached text to produce the structured fields.
+     Those results are cached the same way, so the model runs once per resume
+     version rather than once per page load.
+
+Stateless with respect to storage: nothing is written to uploads/, and nothing
+is written to the database. Both caches live in process memory and are cleared
+by a restart.
 """
 
 import io
@@ -19,7 +28,7 @@ from typing import Any, Dict, Iterator, List, Optional, Tuple
 import fitz  # pymupdf, already used for uploaded resumes
 
 from app.config import settings
-from app.services import Unavailable
+from app.services import NotFound, Unavailable
 from app.services import llm_service, pdf_service
 
 logger = logging.getLogger(__name__)
@@ -39,8 +48,23 @@ DOCUMENT_MIMES = frozenset({PDF_MIME, GDOC_MIME, DOCX_MIME, DOC_MIME})
 MIN_CHARS = 100
 
 _local = threading.local()
+
+# Guards the caches below. Held only for short reads and writes -- never across
+# a Drive fetch or an LLM call, so /status stays responsive during a refresh.
 _cache_lock = threading.Lock()
-_cache: Dict[str, Any] = {"fetched_at": 0.0, "payload": None}
+
+# Whole-listing cache, so repeated page loads don't even re-walk the folder.
+_listing: Dict[str, Any] = {"fetched_at": 0.0, "payload": None}
+
+# Stage 1: parsed documents, keyed on file_id. Holds the modifiedTime the
+# record was built from, so a changed file is re-parsed and nothing else is.
+_text_cache: Dict[str, Dict[str, Any]] = {}
+
+# Stage 2: LLM extractions, keyed the same way. Filled lazily on display.
+_detail_cache: Dict[str, Dict[str, Any]] = {}
+
+# Serialises refreshes so two simultaneous requests don't both walk the folder.
+_refresh_lock = threading.Lock()
 
 
 # --------------------------------------------------------------------------
@@ -49,8 +73,8 @@ _cache: Dict[str, Any] = {"fetched_at": 0.0, "payload": None}
 def _client():
     """One client per thread.
 
-    googleapiclient's underlying http object is not thread-safe, and the
-    listing below runs across a thread pool.
+    googleapiclient's underlying http object is not thread-safe, and the parse
+    stage runs across a thread pool.
     """
     client = getattr(_local, "drive", None)
     if client is not None:
@@ -155,12 +179,7 @@ def _fetch(drive, meta: Dict[str, Any]) -> Tuple[io.BytesIO, str]:
     if mime == PDF_MIME:
         return _drain(drive.files().get_media(fileId=file_id)), "pdf"
     if mime == GDOC_MIME:
-        return (
-            _drain(
-                drive.files().export_media(fileId=file_id, mimeType=PDF_MIME)
-            ),
-            "pdf",
-        )
+        return _drain(drive.files().export_media(fileId=file_id, mimeType=PDF_MIME)), "pdf"
     if mime == DOCX_MIME:
         return _drain(drive.files().get_media(fileId=file_id)), "docx"
 
@@ -187,115 +206,154 @@ def _text_from_docx(buf: io.BytesIO) -> str:
     return "\n".join(parts).strip()
 
 
-def _process(meta: Dict[str, Any], domain: str) -> Dict[str, Any]:
-    """Fetch and parse one Drive document into a candidate row.
+def _parse_document(meta: Dict[str, Any], domain: str) -> Dict[str, Any]:
+    """Stage 1: turn one Drive file into a JSON record. No LLM.
 
-    Returns a dict with a "state" of parsed or skipped. One unreadable file
-    must not abandon the whole listing, so every failure is captured as a row
-    rather than raised.
+    One unreadable file must not abandon the whole listing, so every failure is
+    captured on the record rather than raised.
     """
-    name = meta["name"]
-    base = {
+    record = {
         "file_id": meta["id"],
-        "filename": name,
+        "filename": meta["name"],
         "domain": domain,
         "mime_type": meta["mimeType"],
         "modified": meta.get("modifiedTime"),
         "web_view_link": meta.get("webViewLink"),
         "state": "skipped",
         "reason": None,
-        "full_name": None,
-        "email": None,
-        "phone": None,
-        "location": None,
-        "years_experience": None,
-        "skills": [],
-        "education": [],
-        "summary": None,
         "chars": 0,
-        "extracted_by": None,
+        "text": "",
+        "from_cache": False,
     }
 
     if meta["mimeType"] == DOC_MIME:
-        base["reason"] = "Legacy .doc format is not supported."
-        return base
+        record["reason"] = "Legacy .doc format is not supported."
+        return record
 
     try:
         drive = _client()
         buf, kind = _fetch(drive, meta)
         text = _text_from_pdf(buf) if kind == "pdf" else _text_from_docx(buf)
     except Exception as exc:
-        logger.warning("Drive: failed to read %s: %s", name, exc)
-        base["state"] = "failed"
-        base["reason"] = f"Could not read this file: {exc}"
-        return base
+        logger.warning("Drive: failed to read %s: %s", meta["name"], exc)
+        record["state"] = "failed"
+        record["reason"] = f"Could not read this file: {exc}"
+        return record
 
     if kind == "pdf" and len(text) < MIN_CHARS:
-        base["reason"] = "No text layer -- this looks like a scan and needs OCR."
-        return base
+        record["reason"] = "No text layer -- this looks like a scan and needs OCR."
+        return record
 
-    base["chars"] = len(text)
+    record["state"] = "parsed"
+    record["text"] = text
+    record["chars"] = len(text)
+    # A name is cheap to guess from the first lines and needs no model. It gives
+    # the list something to show before the LLM details arrive.
+    record["display_name"] = pdf_service.guess_name(text) or meta["name"]
+    return record
 
-    try:
-        extracted, engine = llm_service.extract_resume(text)
-    except Exception as exc:  # extraction already falls back internally
-        logger.warning("Drive: extraction failed for %s: %s", name, exc)
-        base["state"] = "failed"
-        base["reason"] = f"Could not extract details: {exc}"
-        return base
 
-    base.update(
-        {
-            "state": "parsed",
-            "full_name": extracted.full_name or pdf_service.guess_name(text),
-            "email": str(extracted.email) if extracted.email else None,
-            "phone": extracted.phone,
-            "location": extracted.location,
-            "years_experience": extracted.years_experience,
-            "skills": extracted.skills,
-            "education": extracted.education,
-            "summary": extracted.summary,
-            "extracted_by": engine,
-        }
-    )
-    return base
+def _public(record: Dict[str, Any]) -> Dict[str, Any]:
+    """A record without its text -- resumes are large and the list doesn't
+    need the body, only the details endpoint does."""
+    return {k: v for k, v in record.items() if k != "text"}
 
 
 # --------------------------------------------------------------------------
-# Public entry point
+# Stage 1: the document listing
 # --------------------------------------------------------------------------
-def _build_payload() -> Dict[str, Any]:
+def _build_listing() -> Dict[str, Any]:
+    """Walk the folder and parse only what changed.
+
+    Listing is metadata only and costs one Drive call per folder. A file whose
+    modifiedTime matches what the cache was built from is never downloaded or
+    parsed again.
+    """
     drive = _client()
     documents = list(_walk(drive, settings.drive_root_folder_id.strip()))
 
-    if not documents:
-        return {
-            "candidates": [],
-            "counts": {"parsed": 0, "skipped": 0, "failed": 0, "total": 0},
-            "fetched_at": time.time(),
-        }
+    records: List[Dict[str, Any]] = []
+    todo: List[Tuple[Dict[str, Any], str]] = []
+    seen = set()
 
-    workers = max(1, min(settings.drive_max_workers, len(documents)))
-    with ThreadPoolExecutor(max_workers=workers) as pool:
-        rows = list(pool.map(lambda pair: _process(*pair), documents))
+    with _cache_lock:
+        for meta, domain in documents:
+            seen.add(meta["id"])
+            entry = _text_cache.get(meta["id"])
+            if entry is not None and entry["modified"] == meta.get("modifiedTime"):
+                # Reuse the parsed text, but take metadata fresh -- a move
+                # between folders changes the domain label.
+                record = dict(entry["record"])
+                record.update(
+                    {
+                        "filename": meta["name"],
+                        "domain": domain,
+                        "modified": meta.get("modifiedTime"),
+                        "web_view_link": meta.get("webViewLink"),
+                        "from_cache": True,
+                    }
+                )
+                records.append(record)
+            else:
+                todo.append((meta, domain))
+
+        # Drop files that have left the folder, from both caches.
+        for stale in [fid for fid in _text_cache if fid not in seen]:
+            del _text_cache[stale]
+        for stale in [fid for fid in _detail_cache if fid not in seen]:
+            del _detail_cache[stale]
+
+    if todo:
+        workers = max(1, min(settings.drive_max_workers, len(todo)))
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            fresh = list(pool.map(lambda pair: _parse_document(*pair), todo))
+
+        with _cache_lock:
+            for record in fresh:
+                # A failure is usually transient (rate limit, timeout), so it
+                # is not cached -- the next read retries it. "skipped" is a
+                # property of the file itself and is safe to remember.
+                if record["state"] in ("parsed", "skipped"):
+                    _text_cache[record["file_id"]] = {
+                        "modified": record["modified"],
+                        "record": record,
+                    }
+                # A re-parsed file has new text, so any detail built from the
+                # old version is stale.
+                _detail_cache.pop(record["file_id"], None)
+        records.extend(fresh)
 
     # Parsed first, then by name -- failures and scans sink to the bottom.
     order = {"parsed": 0, "skipped": 1, "failed": 2}
-    rows.sort(key=lambda r: (order.get(r["state"], 3), (r["filename"] or "").lower()))
+    records.sort(key=lambda r: (order.get(r["state"], 3), (r["filename"] or "").lower()))
 
-    counts = {"parsed": 0, "skipped": 0, "failed": 0, "total": len(rows)}
-    for row in rows:
-        counts[row["state"]] = counts.get(row["state"], 0) + 1
+    counts = {
+        "parsed": 0,
+        "skipped": 0,
+        "failed": 0,
+        "total": len(records),
+        "reused": sum(1 for r in records if r["from_cache"]),
+        "reparsed": len(todo),
+    }
+    for record in records:
+        counts[record["state"]] = counts.get(record["state"], 0) + 1
 
-    return {"candidates": rows, "counts": counts, "fetched_at": time.time()}
+    with _cache_lock:
+        counts["detailed"] = sum(1 for r in records if r["file_id"] in _detail_cache)
+
+    return {
+        "documents": [_public(r) for r in records],
+        "counts": counts,
+        "fetched_at": time.time(),
+    }
 
 
-def load_candidates(force: bool = False) -> Dict[str, Any]:
-    """Return the Drive listing, using the in-process cache unless forced.
+def load_documents(force: bool = False, full: bool = False) -> Dict[str, Any]:
+    """Stage 1 listing. Never calls the LLM.
 
-    The cache exists because every refresh re-downloads and re-extracts every
-    resume, which costs both Drive quota and LLM tokens. It is memory only --
-    a restart clears it, and nothing is persisted anywhere.
+    force -- re-walk the folder instead of serving the whole-listing cache.
+             Unchanged files are still reused, so this is cheap.
+    full  -- also discard the per-file caches, re-parsing every resume.
     """
     if not settings.drive_enabled:
         raise Unavailable(
@@ -303,23 +361,104 @@ def load_candidates(force: bool = False) -> Dict[str, Any]:
             "DRIVE_SERVICE_ACCOUNT_FILE in .env, then restart the server."
         )
 
-    with _cache_lock:
-        age = time.time() - _cache["fetched_at"]
-        cached = _cache["payload"]
-        if not force and cached is not None and age < settings.drive_cache_ttl_seconds:
-            return {**cached, "cached": True, "age_seconds": int(age)}
+    def _fresh_enough() -> Optional[Dict[str, Any]]:
+        with _cache_lock:
+            payload = _listing["payload"]
+            age = time.time() - _listing["fetched_at"]
+        if payload is not None and age < settings.drive_cache_ttl_seconds:
+            return {**payload, "cached": True, "age_seconds": int(age)}
+        return None
 
-        payload = _build_payload()
-        _cache["payload"] = payload
-        _cache["fetched_at"] = payload["fetched_at"]
-        return {**payload, "cached": False, "age_seconds": 0}
+    if not force and not full:
+        hit = _fresh_enough()
+        if hit is not None:
+            return hit
+
+    with _refresh_lock:
+        # Another request may have refreshed while we waited for the lock.
+        if not force and not full:
+            hit = _fresh_enough()
+            if hit is not None:
+                return hit
+
+        if full:
+            with _cache_lock:
+                _text_cache.clear()
+                _detail_cache.clear()
+
+        payload = _build_listing()
+
+        with _cache_lock:
+            _listing["payload"] = payload
+            _listing["fetched_at"] = payload["fetched_at"]
+
+    return {**payload, "cached": False, "age_seconds": 0}
+
+
+# --------------------------------------------------------------------------
+# Stage 2: LLM details, on display
+# --------------------------------------------------------------------------
+def get_details(file_id: str, force: bool = False) -> Dict[str, Any]:
+    """Structured candidate fields for one document.
+
+    This is the only place the LLM is used. It runs against text already in the
+    cache, so no Drive call is made, and the result is cached against the same
+    modifiedTime -- the model runs once per resume version, not once per view.
+    """
+    with _cache_lock:
+        entry = _text_cache.get(file_id)
+        cached = _detail_cache.get(file_id)
+
+    if entry is None:
+        # Cold process, or a listing that has never been built. Build it and
+        # look again rather than failing on a link the user just clicked.
+        load_documents()
+        with _cache_lock:
+            entry = _text_cache.get(file_id)
+            cached = _detail_cache.get(file_id)
+
+    if entry is None:
+        raise NotFound(f"No document {file_id} in the Drive folder.")
+
+    record = entry["record"]
+    if record["state"] != "parsed":
+        raise NotFound(
+            f"'{record['filename']}' has no text to read: {record['reason']}"
+        )
+
+    if not force and cached is not None and cached["modified"] == record["modified"]:
+        return {**cached["detail"], "from_cache": True}
+
+    extracted, engine = llm_service.extract_resume(record["text"])
+    detail = {
+        "file_id": file_id,
+        "filename": record["filename"],
+        "domain": record["domain"],
+        "full_name": extracted.full_name or record.get("display_name"),
+        "email": str(extracted.email) if extracted.email else None,
+        "phone": extracted.phone,
+        "location": extracted.location,
+        "years_experience": extracted.years_experience,
+        "skills": extracted.skills,
+        "education": extracted.education,
+        "summary": extracted.summary,
+        "extracted_by": engine,
+        "from_cache": False,
+    }
+
+    with _cache_lock:
+        _detail_cache[file_id] = {"modified": record["modified"], "detail": detail}
+
+    return detail
 
 
 def status() -> Dict[str, Any]:
-    """Configuration and cache state, without touching Drive."""
+    """Configuration and cache state, without touching Drive or the LLM."""
     with _cache_lock:
-        payload = _cache["payload"]
-        age = time.time() - _cache["fetched_at"] if payload else None
+        payload = _listing["payload"]
+        age = time.time() - _listing["fetched_at"] if payload else None
+        files_cached = len(_text_cache)
+        details_cached = len(_detail_cache)
 
     return {
         "configured": settings.drive_enabled,
@@ -329,4 +468,6 @@ def status() -> Dict[str, Any]:
         "cached": payload is not None,
         "age_seconds": int(age) if age is not None else None,
         "counts": payload["counts"] if payload else None,
+        "files_cached": files_cached,
+        "details_cached": details_cached,
     }

@@ -89,9 +89,10 @@ uvicorn app.main:app --reload
 | `POST` | `/api/applications/{id}/rescreen` | Re-run screening |
 | `PATCH` | `/api/applications/{id}` | Set status: `new`/`screened`/`shortlisted`/`rejected` |
 | `DELETE` | `/api/applications/{id}` | Delete an application |
-| `GET` | `/api/drive/status` | Whether Drive browsing is configured, and cache age |
-| `GET` | `/api/drive/candidates` | Candidates read live from Drive (cached) |
-| `POST` | `/api/drive/refresh` | Re-read every resume from Drive |
+| `GET` | `/api/drive/status` | Whether Drive browsing is configured, and cache state |
+| `GET` | `/api/drive/documents` | Resumes parsed to text. No LLM |
+| `POST` | `/api/drive/refresh?full=` | Re-walk Drive; `full=true` rebuilds everything |
+| `GET` | `/api/drive/documents/{id}/details` | LLM-extracted candidate details for one resume |
 
 Candidates are keyed by email: re-uploading under the same address updates that
 candidate, and re-applying to the same role re-screens rather than duplicating.
@@ -104,8 +105,7 @@ from the **Drive candidates** tab. It is deliberately stateless:
 - resumes are streamed into memory, parsed and discarded -- nothing is written
   to `uploads/`;
 - nothing is written to the database. There is no Drive table and no migration.
-  The only thing that outlives a request is a 15-minute in-process cache, which
-  a restart clears.
+  Both caches live in process memory and are cleared by a restart.
 
 Setup mirrors the `resume_parser` POC: enable the Drive API, create a service
 account, download its JSON key, and share the Drive folder with the service
@@ -127,9 +127,48 @@ gitignored.
 | `.docx` | Parsed with python-docx, including table contents. |
 | `.doc` | Listed as skipped -- the legacy binary format needs LibreOffice. |
 
-A cold read downloads and extracts every resume, so it takes roughly five
-seconds per file. Subsequent loads are served from cache until **Refresh from
-Drive** is pressed or the TTL expires.
+### Two stages
+
+Reading and understanding are separate, because they cost very different things.
+
+**Stage 1 -- read and parse.** `GET /api/drive/documents` walks the folder,
+streams each file into memory, and turns it into a JSON record: metadata plus
+plain text. **No LLM is involved**, so it is fast, free, and never rate
+limited. Roughly three seconds for ten resumes on a cold cache, milliseconds
+once warm.
+
+**Stage 2 -- display.** `GET /api/drive/documents/{file_id}/details` is the
+only endpoint that calls the model, and only for a candidate actually being
+shown. It runs against text already cached, so it makes no Drive call. The page
+renders the list immediately and fills each card in as its details arrive,
+one request at a time.
+
+### Caching
+
+Both stages cache per file, keyed on `file_id` + the Drive `modifiedTime`:
+
+| Cache | Holds | Invalidated by |
+| --- | --- | --- |
+| Whole listing | the last document list | 15-minute TTL, or either button |
+| Per file (stage 1) | metadata + parsed text | the file changing in Drive, or **Rebuild all** |
+| Per file (stage 2) | the LLM extraction | the same, so an edited resume is re-read |
+
+**Check Drive for changes** re-walks the folder -- metadata only, one API call
+per folder. Unchanged files are reused and never downloaded again; only new or
+edited ones are parsed. A file that is re-parsed has its cached details dropped
+too, since they describe the old version. Files that leave the folder are
+evicted from both caches. Failures are deliberately *not* cached, since they are
+usually transient and should be retried. **Rebuild all**
+(`POST /api/drive/refresh?full=true`) discards everything and starts over.
+
+The net effect: the model runs once per resume version, not once per page load.
+
+### Rate limits
+
+Groq's free tier allows 8000 tokens per minute and a resume costs roughly
+2,500, so details are fetched one at a time rather than in parallel. Extraction
+that still fails falls back to regex, visible as `rules` in the "read by" line
+on each card.
 
 ## Layout
 
@@ -142,7 +181,8 @@ app/
   main.py              app, error handlers, static frontend mount
   routes/              HTTP layer, one module per resource
   services/            business logic; pdf_service + llm_service do the work
-                       drive_service reads Drive in memory, stores nothing
+                       drive_service parses Drive files in memory (no LLM),
+                       then extracts details on display; stores nothing
 frontend/              vanilla HTML/CSS/JS, served by FastAPI
 migrations/            Alembic
 uploads/               stored resumes (gitignored)

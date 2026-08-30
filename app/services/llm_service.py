@@ -55,7 +55,7 @@ def _client() -> OpenAI:
         api_key=settings.groq_api_key,
         base_url=settings.groq_base_url,
         timeout=60.0,
-        max_retries=2,
+        max_retries=5,
     )
 
 

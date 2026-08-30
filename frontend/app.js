@@ -319,53 +319,70 @@ async function initRecruiter() {
 
 /* ------------------------------------------------------------------ */
 /* drive.html -- resumes read live from Google Drive                   */
+/*                                                                     */
+/* Two stages, matching the API: the document list is parsed without   */
+/* an LLM and arrives immediately, then each card's candidate details  */
+/* are fetched one at a time and filled in.                            */
 /* ------------------------------------------------------------------ */
-function driveCard(row) {
-  const badge = `<span class="badge ${esc(row.state)}">${esc(row.state)}</span>`;
-  const opened = row.web_view_link
-    ? `<a href="${esc(row.web_view_link)}" target="_blank" rel="noopener">Open in Drive</a>`
-    : "";
-  const fileRow = `<div class="filerow">
-      <span>${esc(row.filename)}</span>
-      ${row.domain ? `<span class="tag plain">${esc(row.domain)}</span>` : ""}
-      ${row.extracted_by ? `<span>read by ${esc(row.extracted_by)}</span>` : ""}
-      ${row.chars ? `<span>${row.chars.toLocaleString()} chars</span>` : ""}
-      ${opened}
+function driveFileRow(doc) {
+  return `<div class="filerow">
+      <span>${esc(doc.filename)}</span>
+      ${doc.domain ? `<span class="tag plain">${esc(doc.domain)}</span>` : ""}
+      ${doc.chars ? `<span>${doc.chars.toLocaleString()} chars</span>` : ""}
+      ${doc.web_view_link
+        ? `<a href="${esc(doc.web_view_link)}" target="_blank" rel="noopener">Open in Drive</a>`
+        : ""}
     </div>`;
+}
 
-  if (row.state !== "parsed") {
+function driveCard(doc) {
+  const badge = `<span class="badge ${esc(doc.state)}">${esc(doc.state)}</span>`;
+
+  if (doc.state !== "parsed") {
     return `<div class="card dcard dim">
       <div class="job-head">
-        <div><p class="job-title">${esc(row.filename)}</p>
-          <div class="job-meta">${esc(row.reason || "Not parsed.")}</div></div>
+        <div><p class="job-title">${esc(doc.filename)}</p>
+          <div class="job-meta">${esc(doc.reason || "Not parsed.")}</div></div>
         ${badge}
       </div>
-      ${fileRow}
+      ${driveFileRow(doc)}
     </div>`;
   }
 
-  const years = row.years_experience != null ? `${row.years_experience} yrs` : "unknown";
-  const cell = (label, value) =>
-    `<div><span>${esc(label)}</span>${esc(value || "—")}</div>`;
-
-  return `<div class="card dcard">
+  // Details arrive later; the slot is filled in by fillDetails().
+  return `<div class="card dcard" id="doc-${esc(doc.file_id)}">
     <div class="job-head">
       <div>
-        <p class="job-title">${esc(row.full_name || row.filename)}</p>
-        <div class="job-meta">${esc(row.email || "no email found")}</div>
+        <p class="job-title">${esc(doc.display_name || doc.filename)}</p>
+        <div class="job-meta" data-slot="sub">Reading details&hellip;</div>
       </div>
       ${badge}
     </div>
-    ${row.summary ? `<p class="reasoning">${esc(row.summary)}</p>` : ""}
-    <div class="meta-grid">
-      ${cell("Experience", years)}
-      ${cell("Location", row.location)}
-      ${cell("Phone", row.phone)}
-      ${cell("Education", (row.education || [])[0])}
-    </div>
-    ${tags(row.skills)}
-    ${fileRow}
+    <div data-slot="body"></div>
+    ${driveFileRow(doc)}
   </div>`;
+}
+
+function renderDetails(card, d) {
+  const cell = (label, value) =>
+    `<div><span>${esc(label)}</span>${esc(value || "—")}</div>`;
+  const years = d.years_experience != null ? `${d.years_experience} yrs` : "unknown";
+
+  const title = card.querySelector(".job-title");
+  if (title && d.full_name) title.textContent = d.full_name;
+
+  card.querySelector('[data-slot="sub"]').innerHTML =
+    `${esc(d.email || "no email found")} · read by ${esc(d.extracted_by || "?")}`;
+
+  card.querySelector('[data-slot="body"]').innerHTML =
+    (d.summary ? `<p class="reasoning">${esc(d.summary)}</p>` : "") +
+    `<div class="meta-grid">
+       ${cell("Experience", years)}
+       ${cell("Location", d.location)}
+       ${cell("Phone", d.phone)}
+       ${cell("Education", (d.education || [])[0])}
+     </div>` +
+    tags(d.skills);
 }
 
 async function initDrive() {
@@ -373,44 +390,84 @@ async function initDrive() {
   const countsEl = document.getElementById("counts");
   const msg = document.getElementById("banner");
   const button = document.getElementById("refresh");
+  const rebuild = document.getElementById("rebuild");
+  let run = 0; // cancels an in-flight detail sweep when a reload starts
 
-  function renderCounts(data) {
+  function renderCounts(data, detailed) {
     const c = data.counts || {};
     const age = data.cached
       ? `cached ${Math.round((data.age_seconds || 0) / 60)} min ago`
       : "just read from Drive";
     countsEl.innerHTML =
       `<span><b>${c.parsed || 0}</b> parsed</span>` +
-      `<span><b>${c.skipped || 0}</b> skipped</span>` +
-      `<span><b>${c.failed || 0}</b> failed</span>` +
+      (c.skipped ? `<span><b>${c.skipped}</b> skipped</span>` : "") +
+      (c.failed ? `<span><b>${c.failed}</b> failed</span>` : "") +
+      (c.reused ? `<span><b>${c.reused}</b> unchanged, reused</span>` : "") +
+      (c.reparsed ? `<span><b>${c.reparsed}</b> newly parsed</span>` : "") +
+      `<span><b>${detailed}</b> of ${c.parsed || 0} detailed</span>` +
       `<span>${esc(age)}</span>`;
   }
 
-  async function load(force) {
+  /* One request at a time: the free Groq tier is capped per minute, and a
+     burst of parallel extractions just triggers rate limiting. */
+  async function fillDetails(docs, data, token) {
+    let done = 0;
+    for (const doc of docs) {
+      if (token !== run) return;
+      const card = document.getElementById(`doc-${doc.file_id}`);
+      if (!card) continue;
+      try {
+        const detail = await api(`/api/drive/documents/${doc.file_id}/details`);
+        if (token !== run) return;
+        renderDetails(card, detail);
+        done += 1;
+      } catch (err) {
+        const sub = card.querySelector('[data-slot="sub"]');
+        if (sub) sub.textContent = `Details unavailable: ${err.message}`;
+      }
+      renderCounts(data, done);
+    }
+  }
+
+  async function load(mode) {
+    const full = mode === "full";
+    const force = full || mode === "check";
+    const token = ++run;
+
     banner(msg, "");
     countsEl.innerHTML = "";
     list.innerHTML = `<div class="spinner">${
-      force ? "Re-reading every resume from Drive&hellip; this takes a while."
-            : "Reading resumes from Drive&hellip;"}</div>`;
+      full ? "Re-reading every resume from Drive&hellip;"
+           : force ? "Checking Drive for changes&hellip;"
+                   : "Reading resumes from Drive&hellip;"}</div>`;
     button.disabled = true;
+    rebuild.disabled = true;
+
     try {
       const data = force
-        ? await api("/api/drive/refresh", { method: "POST" })
-        : await api("/api/drive/candidates");
-      renderCounts(data);
-      list.innerHTML = data.candidates.length
-        ? data.candidates.map(driveCard).join("")
+        ? await api(`/api/drive/refresh${full ? "?full=true" : ""}`, { method: "POST" })
+        : await api("/api/drive/documents");
+      if (token !== run) return;
+
+      renderCounts(data, 0);
+      list.innerHTML = data.documents.length
+        ? data.documents.map(driveCard).join("")
         : `<div class="empty">No documents found in that Drive folder.</div>`;
+
+      // The list is on screen; now fill in what the model has to say.
+      fillDetails(data.documents.filter((d) => d.state === "parsed"), data, token);
     } catch (err) {
       list.innerHTML = "";
       banner(msg, err.message);
     } finally {
       button.disabled = false;
+      rebuild.disabled = false;
     }
   }
 
-  button.addEventListener("click", () => load(true));
-  await load(false);
+  button.addEventListener("click", () => load("check"));
+  rebuild.addEventListener("click", () => load("full"));
+  await load(null);
 }
 
 document.addEventListener("DOMContentLoaded", () => {

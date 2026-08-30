@@ -28,7 +28,7 @@ class Settings(BaseSettings):
     drive_root_folder_id: str = ""
     drive_service_account_file: str = ""
     drive_cache_ttl_seconds: int = 900
-    drive_max_workers: int = 6
+    drive_max_workers: int = 3
 
     @property
     def sqlalchemy_url(self) -> str:

@@ -139,10 +139,12 @@ class ApplicationDetail(ApplicationRead):
 # --------------------------------------------------------------------------
 # Google Drive browsing
 #
-# These describe resumes read live from Drive. They have no ORM counterpart on
-# purpose: nothing here is stored in the database.
+# Two stages. A DriveDocument is the cheap, LLM-free parse of one file; a
+# DriveCandidateDetail is what the model makes of it, fetched only when a
+# candidate is actually displayed. Neither has an ORM counterpart -- nothing
+# here is stored in the database.
 # --------------------------------------------------------------------------
-class DriveCandidate(BaseModel):
+class DriveDocument(BaseModel):
     file_id: str
     filename: str
     domain: str = ""
@@ -152,7 +154,17 @@ class DriveCandidate(BaseModel):
 
     state: str  # parsed | skipped | failed
     reason: Optional[str] = None
+    chars: int = 0
+    display_name: Optional[str] = None
+    from_cache: bool = False
 
+
+class DriveCandidateDetail(BaseModel):
+    """Produced by the LLM at display time, then cached per resume version."""
+
+    file_id: str
+    filename: str
+    domain: str = ""
     full_name: Optional[str] = None
     email: Optional[str] = None
     phone: Optional[str] = None
@@ -161,8 +173,8 @@ class DriveCandidate(BaseModel):
     skills: List[str] = Field(default_factory=list)
     education: List[str] = Field(default_factory=list)
     summary: Optional[str] = None
-    chars: int = 0
     extracted_by: Optional[str] = None
+    from_cache: bool = False
 
 
 class DriveCounts(BaseModel):
@@ -170,10 +182,13 @@ class DriveCounts(BaseModel):
     skipped: int = 0
     failed: int = 0
     total: int = 0
+    reused: int = 0
+    reparsed: int = 0
+    detailed: int = 0
 
 
-class DriveListing(BaseModel):
-    candidates: List[DriveCandidate] = Field(default_factory=list)
+class DriveDocumentList(BaseModel):
+    documents: List[DriveDocument] = Field(default_factory=list)
     counts: DriveCounts
     fetched_at: float
     cached: bool = False
@@ -188,3 +203,5 @@ class DriveStatus(BaseModel):
     cached: bool
     age_seconds: Optional[int] = None
     counts: Optional[DriveCounts] = None
+    files_cached: int = 0
+    details_cached: int = 0
