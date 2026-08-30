@@ -8,3 +8,7 @@ class NotFound(LookupError):
 
 class Conflict(ValueError):
     """The request contradicts current state. -> 409"""
+
+
+class Unavailable(RuntimeError):
+    """A dependency this feature needs is missing or unreachable. -> 503"""

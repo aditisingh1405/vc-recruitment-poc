@@ -317,9 +317,106 @@ async function initRecruiter() {
   }
 }
 
+/* ------------------------------------------------------------------ */
+/* drive.html -- resumes read live from Google Drive                   */
+/* ------------------------------------------------------------------ */
+function driveCard(row) {
+  const badge = `<span class="badge ${esc(row.state)}">${esc(row.state)}</span>`;
+  const opened = row.web_view_link
+    ? `<a href="${esc(row.web_view_link)}" target="_blank" rel="noopener">Open in Drive</a>`
+    : "";
+  const fileRow = `<div class="filerow">
+      <span>${esc(row.filename)}</span>
+      ${row.domain ? `<span class="tag plain">${esc(row.domain)}</span>` : ""}
+      ${row.extracted_by ? `<span>read by ${esc(row.extracted_by)}</span>` : ""}
+      ${row.chars ? `<span>${row.chars.toLocaleString()} chars</span>` : ""}
+      ${opened}
+    </div>`;
+
+  if (row.state !== "parsed") {
+    return `<div class="card dcard dim">
+      <div class="job-head">
+        <div><p class="job-title">${esc(row.filename)}</p>
+          <div class="job-meta">${esc(row.reason || "Not parsed.")}</div></div>
+        ${badge}
+      </div>
+      ${fileRow}
+    </div>`;
+  }
+
+  const years = row.years_experience != null ? `${row.years_experience} yrs` : "unknown";
+  const cell = (label, value) =>
+    `<div><span>${esc(label)}</span>${esc(value || "—")}</div>`;
+
+  return `<div class="card dcard">
+    <div class="job-head">
+      <div>
+        <p class="job-title">${esc(row.full_name || row.filename)}</p>
+        <div class="job-meta">${esc(row.email || "no email found")}</div>
+      </div>
+      ${badge}
+    </div>
+    ${row.summary ? `<p class="reasoning">${esc(row.summary)}</p>` : ""}
+    <div class="meta-grid">
+      ${cell("Experience", years)}
+      ${cell("Location", row.location)}
+      ${cell("Phone", row.phone)}
+      ${cell("Education", (row.education || [])[0])}
+    </div>
+    ${tags(row.skills)}
+    ${fileRow}
+  </div>`;
+}
+
+async function initDrive() {
+  const list = document.getElementById("list");
+  const countsEl = document.getElementById("counts");
+  const msg = document.getElementById("banner");
+  const button = document.getElementById("refresh");
+
+  function renderCounts(data) {
+    const c = data.counts || {};
+    const age = data.cached
+      ? `cached ${Math.round((data.age_seconds || 0) / 60)} min ago`
+      : "just read from Drive";
+    countsEl.innerHTML =
+      `<span><b>${c.parsed || 0}</b> parsed</span>` +
+      `<span><b>${c.skipped || 0}</b> skipped</span>` +
+      `<span><b>${c.failed || 0}</b> failed</span>` +
+      `<span>${esc(age)}</span>`;
+  }
+
+  async function load(force) {
+    banner(msg, "");
+    countsEl.innerHTML = "";
+    list.innerHTML = `<div class="spinner">${
+      force ? "Re-reading every resume from Drive&hellip; this takes a while."
+            : "Reading resumes from Drive&hellip;"}</div>`;
+    button.disabled = true;
+    try {
+      const data = force
+        ? await api("/api/drive/refresh", { method: "POST" })
+        : await api("/api/drive/candidates");
+      renderCounts(data);
+      list.innerHTML = data.candidates.length
+        ? data.candidates.map(driveCard).join("")
+        : `<div class="empty">No documents found in that Drive folder.</div>`;
+    } catch (err) {
+      list.innerHTML = "";
+      banner(msg, err.message);
+    } finally {
+      button.disabled = false;
+    }
+  }
+
+  button.addEventListener("click", () => load(true));
+  await load(false);
+}
+
 document.addEventListener("DOMContentLoaded", () => {
   const page = document.body.dataset.page;
   if (page === "jobs") initJobs();
   if (page === "apply") initApply();
   if (page === "recruiter") initRecruiter();
+  if (page === "drive") initDrive();
 });

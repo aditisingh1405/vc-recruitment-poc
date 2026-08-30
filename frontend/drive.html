@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Drive candidates · VC Recruitment</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body data-page="drive">
+  <header class="site">
+    <span class="brand">VC Recruitment</span>
+    <nav>
+      <a href="jobs.html">Open roles</a>
+      <a href="recruiter.html">Recruiter</a>
+      <a href="drive.html" class="active">Drive candidates</a>
+      <a href="/docs">API</a>
+    </nav>
+  </header>
+  <main>
+    <h1>Drive candidates</h1>
+    <p class="lede">Resumes read live from the shared Google Drive folder. Nothing is downloaded to this machine and nothing is saved to the database &mdash; each file is parsed in memory and discarded.</p>
+    <div id="banner" class="banner"></div>
+
+    <div class="toolbar">
+      <div class="grow"><div class="counts" id="counts"></div></div>
+      <button id="refresh" class="ghost">Refresh from Drive</button>
+    </div>
+
+    <div id="list"><div class="spinner">Reading resumes from Drive&hellip;</div></div>
+  </main>
+  <script src="app.js"></script>
+</body>
+</html>

@@ -6,8 +6,8 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.config import BASE_DIR, settings
-from app.routes import applications, candidates, jobs
-from app.services import Conflict, NotFound
+from app.routes import applications, candidates, drive, jobs
+from app.services import Conflict, NotFound, Unavailable
 from app.services.pdf_service import ResumeError
 
 logging.basicConfig(level=logging.INFO)
@@ -52,12 +52,18 @@ def handle_resume_error(request: Request, exc: ResumeError):
     return JSONResponse(status_code=400, content={"detail": str(exc)})
 
 
+@app.exception_handler(Unavailable)
+def handle_unavailable(request: Request, exc: Unavailable):
+    return JSONResponse(status_code=503, content={"detail": str(exc)})
+
+
 # --------------------------------------------------------------------------
 # Routes
 # --------------------------------------------------------------------------
 app.include_router(jobs.router)
 app.include_router(candidates.router)
 app.include_router(applications.router)
+app.include_router(drive.router)
 
 
 @app.get("/api/health", tags=["meta"])

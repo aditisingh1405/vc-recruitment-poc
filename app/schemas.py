@@ -134,3 +134,57 @@ class ApplicationDetail(ApplicationRead):
 
     job: JobSummary
     candidate: CandidateSummary
+
+
+# --------------------------------------------------------------------------
+# Google Drive browsing
+#
+# These describe resumes read live from Drive. They have no ORM counterpart on
+# purpose: nothing here is stored in the database.
+# --------------------------------------------------------------------------
+class DriveCandidate(BaseModel):
+    file_id: str
+    filename: str
+    domain: str = ""
+    mime_type: str
+    modified: Optional[str] = None
+    web_view_link: Optional[str] = None
+
+    state: str  # parsed | skipped | failed
+    reason: Optional[str] = None
+
+    full_name: Optional[str] = None
+    email: Optional[str] = None
+    phone: Optional[str] = None
+    location: Optional[str] = None
+    years_experience: Optional[float] = None
+    skills: List[str] = Field(default_factory=list)
+    education: List[str] = Field(default_factory=list)
+    summary: Optional[str] = None
+    chars: int = 0
+    extracted_by: Optional[str] = None
+
+
+class DriveCounts(BaseModel):
+    parsed: int = 0
+    skipped: int = 0
+    failed: int = 0
+    total: int = 0
+
+
+class DriveListing(BaseModel):
+    candidates: List[DriveCandidate] = Field(default_factory=list)
+    counts: DriveCounts
+    fetched_at: float
+    cached: bool = False
+    age_seconds: int = 0
+
+
+class DriveStatus(BaseModel):
+    configured: bool
+    folder_id_set: bool
+    key_file_set: bool
+    cache_ttl_seconds: int
+    cached: bool
+    age_seconds: Optional[int] = None
+    counts: Optional[DriveCounts] = None

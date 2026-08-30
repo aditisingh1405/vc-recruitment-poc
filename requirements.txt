@@ -9,3 +9,6 @@ python-multipart
 python-dotenv
 pymupdf
 openai
+google-api-python-client
+google-auth
+python-docx

@@ -15,3 +15,7 @@ venv/
 .vscode/
 .idea/
 .DS_Store
+
+# Google service account keys - never commit
+credentials/
+*sa.json

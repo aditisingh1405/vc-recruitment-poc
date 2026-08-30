@@ -89,9 +89,47 @@ uvicorn app.main:app --reload
 | `POST` | `/api/applications/{id}/rescreen` | Re-run screening |
 | `PATCH` | `/api/applications/{id}` | Set status: `new`/`screened`/`shortlisted`/`rejected` |
 | `DELETE` | `/api/applications/{id}` | Delete an application |
+| `GET` | `/api/drive/status` | Whether Drive browsing is configured, and cache age |
+| `GET` | `/api/drive/candidates` | Candidates read live from Drive (cached) |
+| `POST` | `/api/drive/refresh` | Re-read every resume from Drive |
 
 Candidates are keyed by email: re-uploading under the same address updates that
 candidate, and re-applying to the same role re-screens rather than duplicating.
+
+## Google Drive candidates
+
+A read-only browser for resumes that live in a shared Drive folder, reached
+from the **Drive candidates** tab. It is deliberately stateless:
+
+- resumes are streamed into memory, parsed and discarded -- nothing is written
+  to `uploads/`;
+- nothing is written to the database. There is no Drive table and no migration.
+  The only thing that outlives a request is a 15-minute in-process cache, which
+  a restart clears.
+
+Setup mirrors the `resume_parser` POC: enable the Drive API, create a service
+account, download its JSON key, and share the Drive folder with the service
+account's email as **Viewer**. Then point `.env` at both:
+
+```
+DRIVE_ROOT_FOLDER_ID=<trailing segment of the Drive folder URL>
+DRIVE_SERVICE_ACCOUNT_FILE=/absolute/path/to/sa.json
+```
+
+Leave them blank and the tab reports the feature as unconfigured instead of
+failing. Keep the key file outside the repo, or in `credentials/` which is
+gitignored.
+
+| Format | Handling |
+| --- | --- |
+| PDF | Parsed with pymupdf. Scans with no text layer are listed as skipped. |
+| Google Doc | Exported to PDF by Drive, then parsed as a PDF. |
+| `.docx` | Parsed with python-docx, including table contents. |
+| `.doc` | Listed as skipped -- the legacy binary format needs LibreOffice. |
+
+A cold read downloads and extracts every resume, so it takes roughly five
+seconds per file. Subsequent loads are served from cache until **Refresh from
+Drive** is pressed or the TTL expires.
 
 ## Layout
 
@@ -104,6 +142,7 @@ app/
   main.py              app, error handlers, static frontend mount
   routes/              HTTP layer, one module per resource
   services/            business logic; pdf_service + llm_service do the work
+                       drive_service reads Drive in memory, stores nothing
 frontend/              vanilla HTML/CSS/JS, served by FastAPI
 migrations/            Alembic
 uploads/               stored resumes (gitignored)
