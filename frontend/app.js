@@ -146,6 +146,20 @@ async function initJobs() {
 /* ------------------------------------------------------------------ */
 /* apply.html -- upload a resume against one job                       */
 /* ------------------------------------------------------------------ */
+/* Build a File from the generated PDF and put it in the file input, so the
+   form submits identically to a resume the candidate picked themselves.
+   DataTransfer is the only way to set input.files programmatically. */
+async function attachGeneratedResume(input, info) {
+  const res = await fetch(`/api/simulate/resume/${encodeURIComponent(info.token)}`);
+  if (!res.ok) throw new Error("Could not fetch the generated resume.");
+  const blob = await res.blob();
+  const file = new File([blob], info.filename, { type: "application/pdf" });
+  const transfer = new DataTransfer();
+  transfer.items.add(file);
+  input.files = transfer.files;
+  return file;
+}
+
 async function initApply() {
   const jobId = qs("job");
   const summary = document.getElementById("job-summary");
@@ -177,9 +191,45 @@ async function initApply() {
     return;
   }
 
+  const fileInput = document.getElementById("resume");
+  const simulate = document.getElementById("simulate");
+  const simNote = document.getElementById("sim-note");
+  let generated = false;
+
+  // A file the candidate picks themselves is not ours to push to Drive.
+  fileInput.addEventListener("change", () => {
+    if (!generated) return;
+    generated = false;
+    simNote.className = "simnote";
+    simNote.textContent = "";
+  });
+
+  simulate.addEventListener("click", async () => {
+    simulate.disabled = true;
+    simNote.className = "simnote";
+    simNote.textContent = "Writing a resume\u2026";
+    try {
+      const info = await api("/api/simulate/resume", { method: "POST" });
+      generated = true;
+      await attachGeneratedResume(fileInput, info);
+      generated = true;
+      simNote.className = "simnote ok";
+      simNote.textContent =
+        `Attached ${info.filename} \u2014 ${info.full_name || "candidate"}` +
+        `${info.headline ? ", " + info.headline : ""}. ` +
+        `It will be uploaded to Drive on submit.`;
+    } catch (err) {
+      generated = false;
+      simNote.className = "simnote bad";
+      simNote.textContent = err.message;
+    } finally {
+      simulate.disabled = false;
+    }
+  });
+
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
-    const button = form.querySelector("button");
+    const button = form.querySelector('button[type="submit"]');
     banner(msg, "");
     result.innerHTML = `<div class="spinner">Reading your resume and screening…</div>`;
     button.disabled = true;
@@ -187,10 +237,21 @@ async function initApply() {
     try {
       const data = new FormData(form);
       data.append("job_id", jobId);
+      // Only a resume we generated gets pushed to the shared Drive folder.
+      data.append("upload_to_drive", generated ? "true" : "false");
       const app = await api("/api/applications", { method: "POST", body: data });
       result.innerHTML =
         `<h2>Your screening result</h2>` + applicantCard(app);
-      banner(msg, "Application submitted.", "ok");
+      if (app.warning) {
+        banner(msg, app.warning, "warn");
+      } else {
+        banner(msg, generated
+          ? "Application submitted and the resume was added to Drive."
+          : "Application submitted.", "ok");
+      }
+      generated = false;
+      simNote.className = "simnote";
+      simNote.textContent = "";
       form.reset();
     } catch (err) {
       result.innerHTML = "";

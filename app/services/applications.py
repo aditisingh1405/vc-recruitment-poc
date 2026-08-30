@@ -1,13 +1,16 @@
-from typing import List, Optional
+import logging
+from typing import List, Optional, Tuple
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
-from app.models import STATUSES, Application, Candidate, Job
+from app.models import STATUSES, Applicant, Application, Candidate, Job
 from app.services import Conflict, NotFound
 from app.services import candidates as candidate_service
 from app.services import jobs as job_service
-from app.services import llm_service
+from app.services import drive_service, llm_service
+
+logger = logging.getLogger(__name__)
 
 
 def _with_relations(stmt):
@@ -59,6 +62,28 @@ def screen(db: Session, application: Application) -> Application:
     return application
 
 
+def _record_drive_applicant(
+    db: Session, application: Application, uploaded: dict, generated: bool
+) -> None:
+    """Link an uploaded Drive file to the job it was submitted against.
+
+    Only called after the upload succeeds, so a row here always points at a
+    file that exists.
+    """
+    db.add(
+        Applicant(
+            job_id=application.job_id,
+            application_id=application.id,
+            candidate_id=application.candidate_id,
+            drive_file_id=uploaded["file_id"],
+            drive_filename=uploaded["filename"],
+            drive_web_link=uploaded.get("web_view_link"),
+            generated=generated,
+        )
+    )
+    db.commit()
+
+
 def apply_to_job(
     db: Session,
     job_id: int,
@@ -66,11 +91,18 @@ def apply_to_job(
     content: bytes,
     full_name: Optional[str] = None,
     email: Optional[str] = None,
-) -> Application:
+    upload_to_drive: bool = False,
+    generated: bool = False,
+) -> Tuple[Application, Optional[str]]:
     """The candidate-facing flow: upload a resume against a job, get screened.
 
     Re-applying to the same job with the same email refreshes the resume and
     re-screens rather than failing on the unique constraint.
+
+    When upload_to_drive is set, the resume is also pushed to the shared Drive
+    folder and recorded in the applicants table. That step is best-effort: a
+    Drive failure must not lose an application that is otherwise complete, so
+    it is returned as a warning rather than raised.
     """
     job = job_service.get_job(db, job_id)
     if not job.is_open:
@@ -91,7 +123,20 @@ def apply_to_job(
         db.commit()
         db.refresh(application)
 
-    return screen(db, application)
+    application = screen(db, application)
+
+    warning = None
+    if upload_to_drive:
+        try:
+            uploaded = drive_service.upload_resume(filename, content)
+            _record_drive_applicant(db, application, uploaded, generated)
+        except Exception as exc:
+            # The application itself is already saved and screened; surface the
+            # Drive problem without discarding it.
+            logger.warning("Drive upload failed for %s: %s", filename, exc)
+            warning = f"The application was saved, but the upload to Drive failed: {exc}"
+
+    return application, warning
 
 
 def rescreen(db: Session, application_id: int) -> Application:

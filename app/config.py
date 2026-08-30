@@ -1,3 +1,4 @@
+import tempfile
 from functools import lru_cache
 from pathlib import Path
 
@@ -28,7 +29,21 @@ class Settings(BaseSettings):
     drive_root_folder_id: str = ""
     drive_service_account_file: str = ""
     drive_cache_ttl_seconds: int = 900
+    # Uploading needs the folder shared with the service account as Editor;
+    # the read-only scope cannot write even to a folder you own.
+    drive_scope: str = "https://www.googleapis.com/auth/drive"
+
+    # Uploading cannot use the service account: service accounts own no
+    # storage quota, so a write to a personal Drive fails outright. Writes
+    # go through OAuth credentials for a real Google account instead --
+    # see scripts/drive_authorize.py.
+    drive_oauth_client_file: str = ""
+    drive_oauth_token_file: str = ""
     drive_max_workers: int = 3
+
+    # Simulated resumes are written here, not into uploads/ -- they are
+    # scratch files that only exist between generating and submitting.
+    generated_dir: Path = Path(tempfile.gettempdir()) / "vc-recruitment-generated"
 
     @property
     def sqlalchemy_url(self) -> str:
@@ -45,6 +60,11 @@ class Settings(BaseSettings):
         return bool(self.groq_api_key.strip())
 
     @property
+    def drive_upload_enabled(self) -> bool:
+        """Uploading needs an authorised user token, not the service account."""
+        return bool(self.drive_oauth_token_file.strip())
+
+    @property
     def drive_enabled(self) -> bool:
         """Both halves are required: an ID with no key, or a key with no ID,
         is a half-configured feature and is treated as off."""
@@ -58,6 +78,7 @@ class Settings(BaseSettings):
 def get_settings() -> Settings:
     loaded = Settings()
     loaded.upload_dir.mkdir(parents=True, exist_ok=True)
+    loaded.generated_dir.mkdir(parents=True, exist_ok=True)
     return loaded
 
 

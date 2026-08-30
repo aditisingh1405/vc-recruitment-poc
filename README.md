@@ -93,6 +93,8 @@ uvicorn app.main:app --reload
 | `GET` | `/api/drive/documents` | Resumes parsed to text. No LLM |
 | `POST` | `/api/drive/refresh?full=` | Re-walk Drive; `full=true` rebuilds everything |
 | `GET` | `/api/drive/documents/{id}/details` | LLM-extracted candidate details for one resume |
+| `POST` | `/api/simulate/resume` | Generate a fictional resume PDF into temp |
+| `GET` | `/api/simulate/resume/{token}` | Fetch a generated resume so the form can attach it |
 
 Candidates are keyed by email: re-uploading under the same address updates that
 candidate, and re-applying to the same role re-screens rather than duplicating.
@@ -163,6 +165,41 @@ usually transient and should be retried. **Rebuild all**
 
 The net effect: the model runs once per resume version, not once per page load.
 
+### Simulating a resume
+
+The apply form has a **Simulate resume** button beside the file picker. It asks
+the model for a fictional candidate, renders it to a real PDF, saves it under
+the system temp directory, and attaches it to the form -- so submitting takes
+exactly the same path as a resume someone picked themselves.
+
+Every generated file is named `gen_<name>_<id>.pdf`. The prefix follows the
+file into Drive and into the `applicants.generated` column, so a made-up
+candidate is never mistaken for a real one. Temp files older than six hours are
+swept on the next generate. Without a Groq key the button still works, building
+the resume from a template instead.
+
+On submit, a generated resume is uploaded to the shared Drive folder and
+recorded in the `applicants` table -- `drive_file_id` against the `job_id` it
+was submitted for, plus the application and candidate it belongs to. The row is
+written only after the upload succeeds, so it never points at a file that does
+not exist. A resume the candidate chose themselves is not uploaded.
+
+**Uploads need OAuth, not the service account.** Service accounts own no Drive
+storage quota, so `files.create` fails with *"Service Accounts do not have
+storage quota"* even when the folder is shared with them as Editor. Sharing as
+Editor is necessary but not sufficient. Uploads therefore run as a real Google
+account:
+
+```bash
+# 1. Google Cloud console -> Credentials -> OAuth client ID -> Desktop app
+# 2. Download the JSON, set DRIVE_OAUTH_CLIENT_FILE in .env
+python scripts/drive_authorize.py
+# 3. Put the printed token path in DRIVE_OAUTH_TOKEN_FILE, restart
+```
+
+Until that is done the button and the application still work; only the upload
+is skipped, and the response carries a warning explaining why.
+
 ### Rate limits
 
 Groq's free tier allows 8000 tokens per minute and a resume costs roughly
@@ -176,13 +213,14 @@ on each card.
 app/
   config.py            settings from .env, psycopg driver fix
   database.py          engine, session, Base, get_db
-  models.py            Job, Candidate, Application
+  models.py            Job, Candidate, Application, Applicant
   schemas.py           request/response models
   main.py              app, error handlers, static frontend mount
   routes/              HTTP layer, one module per resource
   services/            business logic; pdf_service + llm_service do the work
                        drive_service parses Drive files in memory (no LLM),
                        then extracts details on display; stores nothing
+                       resume_generator invents simulated resumes
 frontend/              vanilla HTML/CSS/JS, served by FastAPI
 migrations/            Alembic
 uploads/               stored resumes (gitignored)

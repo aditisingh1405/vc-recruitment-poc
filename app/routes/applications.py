@@ -7,6 +7,7 @@ from app.database import get_db
 from app.schemas import ApplicationDetail, ApplicationUpdate
 from app.services import Conflict
 from app.services import applications as application_service
+from app.services.resume_generator import GENERATED_PREFIX
 
 router = APIRouter(prefix="/api/applications", tags=["applications"])
 
@@ -17,18 +18,29 @@ async def apply(
     resume: UploadFile = File(..., description="PDF resume"),
     full_name: Optional[str] = Form(None),
     email: Optional[str] = Form(None),
+    upload_to_drive: bool = Form(False),
     db: Session = Depends(get_db),
 ):
-    """Apply to a job: upload a resume, get it parsed and screened in one call."""
+    """Apply to a job: upload a resume, get it parsed and screened in one call.
+
+    With upload_to_drive set, the resume is also copied into the shared Drive
+    folder and recorded in the applicants table against this job posting.
+    """
     content = await resume.read()
-    return application_service.apply_to_job(
+    filename = resume.filename or "resume.pdf"
+    application, warning = application_service.apply_to_job(
         db,
         job_id,
-        resume.filename or "resume.pdf",
+        filename,
         content,
         full_name=full_name,
         email=email,
+        upload_to_drive=upload_to_drive,
+        generated=filename.startswith(GENERATED_PREFIX),
     )
+    detail = ApplicationDetail.model_validate(application)
+    detail.warning = warning
+    return detail
 
 
 @router.get("", response_model=List[ApplicationDetail])

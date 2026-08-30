@@ -34,6 +34,7 @@ from app.services import llm_service, pdf_service
 logger = logging.getLogger(__name__)
 
 SCOPES = ["https://www.googleapis.com/auth/drive.readonly"]
+WRITE_SCOPES = ["https://www.googleapis.com/auth/drive"]
 
 FOLDER_MIME = "application/vnd.google-apps.folder"
 PDF_MIME = "application/pdf"
@@ -452,6 +453,109 @@ def get_details(file_id: str, force: bool = False) -> Dict[str, Any]:
     return detail
 
 
+# --------------------------------------------------------------------------
+# Uploading
+#
+# Reading uses the service account; writing cannot. A service account owns no
+# Drive storage quota, so creating a file in a personal Drive fails with
+# "Service Accounts do not have storage quota" even when the folder is shared
+# with it as Editor. Writes therefore run as a real Google account, authorised
+# once via scripts/drive_authorize.py.
+# --------------------------------------------------------------------------
+def _write_client():
+    client = getattr(_local, "drive_write", None)
+    if client is not None:
+        return client
+
+    if not settings.drive_enabled:
+        raise Unavailable(
+            "Google Drive is not configured. Set DRIVE_ROOT_FOLDER_ID and "
+            "DRIVE_SERVICE_ACCOUNT_FILE in .env, then restart the server."
+        )
+    if not settings.drive_upload_enabled:
+        raise Unavailable(
+            "Uploading to Drive is not set up. Service accounts have no storage "
+            "quota, so uploads have to run as a real Google account: run "
+            "`python scripts/drive_authorize.py`, then set DRIVE_OAUTH_TOKEN_FILE "
+            "in .env and restart."
+        )
+
+    try:
+        from google.auth.transport.requests import Request
+        from google.oauth2.credentials import Credentials
+        from googleapiclient.discovery import build
+    except ImportError as exc:  # pragma: no cover - dependency guard
+        raise Unavailable(
+            "The Google Drive libraries are not installed. Run "
+            "`pip install -r requirements.txt`."
+        ) from exc
+
+    try:
+        creds = Credentials.from_authorized_user_file(
+            settings.drive_oauth_token_file, WRITE_SCOPES
+        )
+    except FileNotFoundError as exc:
+        raise Unavailable(
+            f"Drive upload token not found at {settings.drive_oauth_token_file}. "
+            "Run `python scripts/drive_authorize.py` to create it."
+        ) from exc
+    except ValueError as exc:
+        raise Unavailable(f"Drive upload token is not valid: {exc}") from exc
+
+    if not creds.valid:
+        if creds.expired and creds.refresh_token:
+            creds.refresh(Request())
+            Path(settings.drive_oauth_token_file).write_text(creds.to_json())
+        else:
+            raise Unavailable(
+                "The Drive upload token has expired and cannot be refreshed. "
+                "Run `python scripts/drive_authorize.py` again."
+            )
+
+    client = build("drive", "v3", credentials=creds, cache_discovery=False)
+    _local.drive_write = client
+    return client
+
+
+def upload_resume(filename: str, content: bytes) -> Dict[str, Any]:
+    """Put one PDF into the shared folder and return its Drive metadata.
+
+    The new file is added to the same folder the listing reads, so an uploaded
+    resume shows up on the Resumes tab after the next refresh.
+    """
+    from googleapiclient.http import MediaIoBaseUpload
+
+    drive = _write_client()
+    created = (
+        drive.files()
+        .create(
+            body={
+                "name": filename,
+                "parents": [settings.drive_root_folder_id.strip()],
+            },
+            media_body=MediaIoBaseUpload(
+                io.BytesIO(content), mimetype="application/pdf", resumable=False
+            ),
+            fields="id, name, webViewLink, size, modifiedTime",
+            supportsAllDrives=True,
+        )
+        .execute()
+    )
+
+    # The folder has changed, so the cached listing is stale.
+    with _cache_lock:
+        _listing["payload"] = None
+        _listing["fetched_at"] = 0.0
+
+    logger.info("Drive: uploaded %s as %s", filename, created["id"])
+    return {
+        "file_id": created["id"],
+        "filename": created["name"],
+        "web_view_link": created.get("webViewLink"),
+        "modified": created.get("modifiedTime"),
+    }
+
+
 def status() -> Dict[str, Any]:
     """Configuration and cache state, without touching Drive or the LLM."""
     with _cache_lock:
@@ -470,4 +574,5 @@ def status() -> Dict[str, Any]:
         "counts": payload["counts"] if payload else None,
         "files_cached": files_cached,
         "details_cached": details_cached,
+        "upload_enabled": settings.drive_upload_enabled,
     }

@@ -35,7 +35,11 @@
         </div>
       </div>
       <label for="resume">Resume <span class="hint">— PDF, max 5 MB, text-based (not a scan)</span></label>
-      <input id="resume" name="resume" type="file" accept="application/pdf" required>
+      <div class="filepick">
+        <button type="button" id="simulate" class="ghost">Simulate resume</button>
+        <input id="resume" name="resume" type="file" accept="application/pdf" required>
+      </div>
+      <p class="simnote" id="sim-note"></p>
       <p></p>
       <button type="submit">Submit application</button>
     </form>

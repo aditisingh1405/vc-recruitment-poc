@@ -6,7 +6,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.config import BASE_DIR, settings
-from app.routes import applications, candidates, drive, jobs
+from app.routes import applications, candidates, drive, jobs, simulate
 from app.services import Conflict, NotFound, Unavailable
 from app.services.pdf_service import ResumeError
 
@@ -64,6 +64,7 @@ app.include_router(jobs.router)
 app.include_router(candidates.router)
 app.include_router(applications.router)
 app.include_router(drive.router)
+app.include_router(simulate.router)
 
 
 @app.get("/api/health", tags=["meta"])

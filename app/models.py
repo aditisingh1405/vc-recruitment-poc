@@ -103,3 +103,49 @@ class Application(Base):
 
     job: Mapped["Job"] = relationship(back_populates="applications")
     candidate: Mapped["Candidate"] = relationship(back_populates="applications")
+
+
+class Applicant(Base):
+    """A resume that was uploaded to Drive as part of an application.
+
+    Links the Drive file back to the job it was submitted against. Rows are
+    written only after an upload actually succeeds, so a row here always
+    corresponds to a real file in the folder.
+
+    Note this is the one place Drive data is persisted. The Resumes tab stays
+    stateless; this table exists because an application is a durable record.
+    """
+
+    __tablename__ = "applicants"
+    __table_args__ = (
+        UniqueConstraint("drive_file_id", name="uq_applicant_drive_file"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+
+    # The job posting this resume was submitted against.
+    job_id: Mapped[int] = mapped_column(
+        ForeignKey("jobs.id", ondelete="CASCADE"), index=True
+    )
+    # Nullable so a row survives its application being deleted.
+    application_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("applications.id", ondelete="SET NULL"), index=True
+    )
+    candidate_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("candidates.id", ondelete="SET NULL"), index=True
+    )
+
+    drive_file_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    drive_filename: Mapped[str] = mapped_column(String(255), nullable=False)
+    drive_web_link: Mapped[Optional[str]] = mapped_column(String(512))
+
+    # True when the resume came from the Simulate resume button.
+    generated: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+    job: Mapped["Job"] = relationship()
+    application: Mapped[Optional["Application"]] = relationship()
+    candidate: Mapped[Optional["Candidate"]] = relationship()

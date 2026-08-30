@@ -245,3 +245,16 @@ a.button {
   color: var(--muted);
 }
 .filerow a { color: var(--accent); }
+
+/* ---- Simulate resume ---- */
+.filepick { display: flex; align-items: center; gap: 12px; }
+.filepick input[type="file"] { flex: 1; min-width: 0; }
+.filepick button { white-space: nowrap; flex: none; }
+.simnote {
+  margin: 8px 0 0;
+  font-size: 13px;
+  color: var(--muted);
+  min-height: 1em;
+}
+.simnote.ok { color: var(--strong); }
+.simnote.bad { color: var(--weak); }

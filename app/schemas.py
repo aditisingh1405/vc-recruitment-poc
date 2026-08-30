@@ -135,6 +135,22 @@ class ApplicationDetail(ApplicationRead):
     job: JobSummary
     candidate: CandidateSummary
 
+    # Set when the application saved but a follow-on step (the Drive upload)
+    # did not. The application is still valid.
+    warning: Optional[str] = None
+
+
+class GeneratedResume(BaseModel):
+    """A simulated resume waiting in temp for the form to pick up."""
+
+    token: str
+    filename: str
+    full_name: Optional[str] = None
+    email: Optional[str] = None
+    headline: Optional[str] = None
+    size_bytes: int
+    generated_by: str
+
 
 # --------------------------------------------------------------------------
 # Google Drive browsing
