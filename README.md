@@ -12,7 +12,9 @@ upload a PDF resume, an LLM extracts structured data and a suitability verdict.
 4. The same service scores the candidate against the role and returns a
    0–100 score, a verdict (`strong_fit` / `possible_fit` / `not_a_fit`), and
    written reasoning citing matched and missing skills.
-5. The recruiter view lists applicants ranked by score.
+5. The **Resumes** tab lists those applicants beside their resume: which role
+   each applied to, the score and verdict, and controls to change status or
+   re-screen. The recruiter page is only for posting roles.
 
 **Screening works without an API key.** If `GROQ_API_KEY` is unset, the app
 falls back to deterministic keyword matching (skill overlap for 70 points,
@@ -21,7 +23,25 @@ records which engine produced its verdict in `screened_by`, and the recruiter
 page shows a banner when the fallback is active. Add a key and use the
 **Re-screen** button to upgrade an existing verdict.
 
+**Add a key before demoing it, though.** The fallback extractor finds a name and
+an email but no skills, so the fallback screener then has nothing to match:
+every applicant comes back with an empty `matched_skills`, everything listed as
+missing, and a low score. That is the fallback working as designed — it just
+looks like a bug.
+
 ## Setup
+
+**Required.** Nothing starts without these:
+
+- **Python 3.9+** with `venv`
+- **PostgreSQL** reachable on a URL you control — a Docker one-liner is below
+
+**Optional.** Each is independently skippable; the app reports the feature as
+off rather than failing:
+
+- `GROQ_API_KEY` — without it, extraction and screening use keyword rules
+- a Drive **service account** — without it, the Resumes tab says "not configured"
+- a Drive **OAuth client** — without it, resumes are never uploaded to Drive
 
 ```bash
 python3 -m venv .venv
@@ -66,8 +86,18 @@ alembic upgrade head
 uvicorn app.main:app --reload
 ```
 
-- App: http://localhost:8000 — open roles, apply, recruiter dashboard
+- App: http://localhost:8000 — open roles, apply, recruiter, resumes
 - API docs: http://localhost:8000/docs
+
+### Check it worked
+
+```bash
+curl localhost:8000/api/health
+```
+
+`{"status":"ok","screening_engine":"llm","model":"..."}` means the Groq key is
+live. `"screening_engine":"rules"` means it is not — the app still runs, with
+the keyword fallback described above.
 
 ## API
 
@@ -89,6 +119,7 @@ uvicorn app.main:app --reload
 | `POST` | `/api/applications/{id}/rescreen` | Re-run screening |
 | `PATCH` | `/api/applications/{id}` | Set status: `new`/`screened`/`shortlisted`/`rejected` |
 | `DELETE` | `/api/applications/{id}` | Delete an application |
+| `GET` | `/api/applicants?job_id=` | Resumes uploaded through an application, with their job and screening |
 | `GET` | `/api/drive/status` | Whether Drive browsing is configured, and cache state |
 | `GET` | `/api/drive/documents` | Resumes parsed to text. No LLM |
 | `POST` | `/api/drive/refresh?full=` | Re-walk Drive; `full=true` rebuilds everything |
@@ -101,13 +132,27 @@ candidate, and re-applying to the same role re-screens rather than duplicating.
 
 ## Resumes (Google Drive)
 
-A read-only browser for resumes that live in a shared Drive folder, reached
-from the **Resumes** tab. It is deliberately stateless:
+The **Resumes** tab has two views, switched with the Candidates / Applicants
+toggle at the top of the page.
+
+**Candidates** is every resume in the shared folder, read live from Drive. It is
+deliberately stateless:
 
 - resumes are streamed into memory, parsed and discarded -- nothing is written
   to `uploads/`;
-- nothing is written to the database. There is no Drive table and no migration.
-  Both caches live in process memory and are cleared by a restart.
+- nothing is written to the database. Both caches live in process memory and
+  are cleared by a restart.
+
+**Applicants** is the durable half: only the resumes that arrived through an
+application. Each card adds the role it was submitted against and the screening
+result -- score, verdict, reasoning, matched and missing skills -- plus the
+status dropdown and **Re-screen**. It is served by `GET /api/applicants` and
+reads only the database; the `applicants` table is the one place Drive data is
+persisted.
+
+The toggle filters data already loaded, so flipping it makes no new Drive call
+and never re-runs the model. A resume deleted from Drive still shows here,
+because the application is a real record even when the file is gone.
 
 Setup mirrors the `resume_parser` POC: enable the Drive API, create a service
 account, download its JSON key, and share the Drive folder with the service
@@ -167,10 +212,12 @@ The net effect: the model runs once per resume version, not once per page load.
 
 ### Simulating a resume
 
-The apply form has a **Simulate resume** button beside the file picker. It asks
-the model for a fictional candidate, renders it to a real PDF, saves it under
-the system temp directory, and attaches it to the form -- so submitting takes
-exactly the same path as a resume someone picked themselves.
+The apply form has a **Simulate application** button beside the "Your
+application" heading. It asks the model for a fictional candidate, renders it to
+a real PDF, saves it under the system temp directory, attaches it to the form
+and fills in the name and email -- so submitting takes exactly the same path as
+a resume someone picked themselves. Fields it filled are cleared if you then
+pick your own file; anything you typed yourself is left alone.
 
 Every generated file is named `gen_<name>_<id>.pdf`. The prefix follows the
 file into Drive and into the `applicants.generated` column, so a made-up
@@ -207,6 +254,23 @@ Groq's free tier allows 8000 tokens per minute and a resume costs roughly
 that still fails falls back to regex, visible as `rules` in the "read by" line
 on each card.
 
+There is also a **daily** token cap per model, and that is the one that bites.
+Exhausting it makes every extraction fall back to `rules`, so cards fill in with
+a name and email but no skills or summary -- easily mistaken for the page being
+broken. **Rebuild all** is what spends it: it discards every cached extraction
+and re-runs the model over the whole folder. Prefer **Check Drive for changes**,
+which reuses them and only re-reads files that actually changed.
+
+Model availability and limits vary by account -- a key may not be entitled to
+the models the Groq docs list. List yours:
+
+```bash
+curl -H "Authorization: Bearer $GROQ_API_KEY" https://api.groq.com/openai/v1/models
+```
+
+and set `GROQ_MODEL` in `.env` to one your key can reach. A 404 saying the model
+"does not exist or you do not have access to it" means exactly that.
+
 ## Layout
 
 ```
@@ -230,5 +294,6 @@ uploads/               stored resumes (gitignored)
 
 - Resumes must be text-based PDFs; scanned/image-only files are rejected
   rather than OCR'd.
-- No authentication — the recruiter view is open to anyone who can reach it.
+- No authentication — every page is open to anyone who can reach it, including
+  the applicant data and resumes on the **Resumes** tab.
 - Uploaded resumes are stored on local disk, not object storage.
