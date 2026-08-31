@@ -23,7 +23,10 @@
     <div id="job-summary"></div>
 
     <form id="apply-form" class="card">
-      <h2>Your application</h2>
+      <div class="form-head">
+        <h2>Your application</h2>
+        <button type="button" id="simulate" class="ghost">Simulate application</button>
+      </div>
       <div class="row">
         <div>
           <label for="full_name">Full name <span class="hint">— optional, read from the resume if blank</span></label>
@@ -35,13 +38,9 @@
         </div>
       </div>
       <label for="resume">Resume <span class="hint">— PDF, max 5 MB, text-based (not a scan)</span></label>
-      <div class="filepick">
-        <button type="button" id="simulate" class="ghost">Simulate resume</button>
-        <input id="resume" name="resume" type="file" accept="application/pdf" required>
-      </div>
+      <input id="resume" name="resume" type="file" accept="application/pdf" required>
       <p class="simnote" id="sim-note"></p>
-      <p></p>
-      <button type="submit">Submit application</button>
+      <button type="submit" class="submit">Submit application</button>
     </form>
 
     <div id="result"></div>

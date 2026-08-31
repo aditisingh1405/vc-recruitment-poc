@@ -62,6 +62,23 @@ def screen(db: Session, application: Application) -> Application:
     return application
 
 
+def list_applicants(db: Session, job_id: Optional[int] = None) -> List[Applicant]:
+    """Every resume that reached Drive through an application, newest first.
+
+    The Resumes tab reads this to answer the one question a Drive listing
+    cannot: which posting a given file was submitted against.
+    """
+    stmt = select(Applicant).options(
+        selectinload(Applicant.job),
+        selectinload(Applicant.candidate),
+        selectinload(Applicant.application),
+    )
+    if job_id is not None:
+        stmt = stmt.where(Applicant.job_id == job_id)
+    stmt = stmt.order_by(Applicant.created_at.desc(), Applicant.id.desc())
+    return list(db.scalars(stmt))
+
+
 def _record_drive_applicant(
     db: Session, application: Application, uploaded: dict, generated: bool
 ) -> None:

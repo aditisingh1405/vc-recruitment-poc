@@ -192,16 +192,33 @@ async function initApply() {
   }
 
   const fileInput = document.getElementById("resume");
+  const nameInput = document.getElementById("full_name");
+  const emailInput = document.getElementById("email");
   const simulate = document.getElementById("simulate");
   const simNote = document.getElementById("sim-note");
   let generated = false;
 
-  // A file the candidate picks themselves is not ours to push to Drive.
-  fileInput.addEventListener("change", () => {
-    if (!generated) return;
+  // Clear only the fields Simulate filled, so a value the candidate typed
+  // themselves is never wiped out from under them.
+  function clearSimulated() {
     generated = false;
+    if (nameInput.dataset.simulated) {
+      nameInput.value = "";
+      delete nameInput.dataset.simulated;
+    }
+    if (emailInput.dataset.simulated) {
+      emailInput.value = "";
+      delete emailInput.dataset.simulated;
+    }
     simNote.className = "simnote";
     simNote.textContent = "";
+  }
+
+  // A file the candidate picks themselves is not ours to push to Drive, and
+  // it makes the simulated name and email stale.
+  fileInput.addEventListener("change", () => {
+    if (!generated) return;
+    clearSimulated();
   });
 
   simulate.addEventListener("click", async () => {
@@ -212,11 +229,22 @@ async function initApply() {
       const info = await api("/api/simulate/resume", { method: "POST" });
       generated = true;
       await attachGeneratedResume(fileInput, info);
-      generated = true;
+      // Fill the form from the same persona the PDF was rendered from, so
+      // what the recruiter sees matches the attached resume.
+      if (info.full_name) {
+        nameInput.value = info.full_name;
+        nameInput.dataset.simulated = "1";
+      }
+      if (info.email) {
+        emailInput.value = info.email;
+        emailInput.dataset.simulated = "1";
+      }
       simNote.className = "simnote ok";
       simNote.textContent =
-        `Attached ${info.filename} \u2014 ${info.full_name || "candidate"}` +
-        `${info.headline ? ", " + info.headline : ""}. ` +
+        `Filled in ${info.full_name || "candidate"}` +
+        `${info.email ? " <" + info.email + ">" : ""}` +
+        `${info.headline ? ", " + info.headline : ""} ` +
+        `and attached ${info.filename}. ` +
         `It will be uploaded to Drive on submit.`;
     } catch (err) {
       generated = false;
@@ -267,46 +295,10 @@ async function initApply() {
 /* ------------------------------------------------------------------ */
 async function initRecruiter() {
   const jobForm = document.getElementById("job-form");
-  const picker = document.getElementById("job-picker");
-  const applicants = document.getElementById("applicants");
   const msg = document.getElementById("banner");
   const formMsg = document.getElementById("form-banner");
 
   await showEngineNotice(msg);
-
-  async function loadJobs(selectId) {
-    const jobs = await api("/api/jobs");
-    picker.innerHTML = jobs.length
-      ? jobs
-          .map(
-            (j) =>
-              `<option value="${j.id}">${esc(j.title)}${
-                j.is_open ? "" : " (closed)"
-              } — ${j.location ? esc(j.location) : "no location"}</option>`
-          )
-          .join("")
-      : `<option value="">No jobs posted yet</option>`;
-    if (selectId) picker.value = String(selectId);
-    await loadApplicants();
-  }
-
-  async function loadApplicants() {
-    const jobId = picker.value;
-    if (!jobId) {
-      applicants.innerHTML = `<div class="empty">Post a job to start collecting applicants.</div>`;
-      return;
-    }
-    applicants.innerHTML = `<div class="spinner">Loading applicants…</div>`;
-    try {
-      const apps = await api(`/api/jobs/${jobId}/applications`);
-      applicants.innerHTML = apps.length
-        ? apps.map((a) => applicantCard(a, { recruiter: true })).join("")
-        : `<div class="empty">No applications for this role yet.</div>`;
-    } catch (err) {
-      applicants.innerHTML = "";
-      banner(msg, err.message);
-    }
-  }
 
   jobForm.addEventListener("submit", async (event) => {
     event.preventDefault();
@@ -331,51 +323,13 @@ async function initRecruiter() {
         }),
       });
       jobForm.reset();
-      banner(formMsg, `Posted “${job.title}”.`, "ok");
-      await loadJobs(job.id);
+      banner(formMsg, `Posted \u201c${job.title}\u201d.`, "ok");
     } catch (err) {
       banner(formMsg, err.message);
     } finally {
       button.disabled = false;
     }
   });
-
-  picker.addEventListener("change", loadApplicants);
-
-  // Delegated: applicant cards are re-rendered on every load.
-  applicants.addEventListener("click", async (event) => {
-    const id = event.target.dataset.rescreen;
-    if (!id) return;
-    event.target.disabled = true;
-    try {
-      await api(`/api/applications/${id}/rescreen`, { method: "POST" });
-      await loadApplicants();
-    } catch (err) {
-      banner(msg, err.message);
-      event.target.disabled = false;
-    }
-  });
-
-  applicants.addEventListener("change", async (event) => {
-    const id = event.target.dataset.status;
-    if (!id) return;
-    try {
-      await api(`/api/applications/${id}`, {
-        method: "PATCH",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ status: event.target.value }),
-      });
-      await loadApplicants();
-    } catch (err) {
-      banner(msg, err.message);
-    }
-  });
-
-  try {
-    await loadJobs();
-  } catch (err) {
-    banner(msg, err.message);
-  }
 }
 
 /* ------------------------------------------------------------------ */
@@ -396,7 +350,55 @@ function driveFileRow(doc) {
     </div>`;
 }
 
-function driveCard(doc) {
+/* Which posting this resume was submitted against -- the one field the
+   Applicants view adds. Drive knows the file; only the database knows this. */
+function appliedRow(applicant) {
+  if (!applicant) return "";
+  const when = applicant.created_at
+    ? new Date(applicant.created_at).toLocaleDateString(undefined, {
+        day: "numeric", month: "short", year: "numeric",
+      })
+    : "";
+  return `<div class="applied">
+      <span class="applied-label">Applied to</span>
+      <span class="applied-job">${esc(applicant.job.title)}</span>
+      ${applicant.job.location ? `<span class="tag plain">${esc(applicant.job.location)}</span>` : ""}
+      ${when ? `<span class="applied-when">${esc(when)}</span>` : ""}
+    </div>`;
+}
+
+/* The screening result, shown on the Applicants view. This is the recruiter
+   review that used to live on the Recruiter tab: verdict, reasoning, skill
+   hits and misses, plus the status and re-screen controls. */
+function screeningBlock(applicant) {
+  const app = applicant && applicant.application;
+  if (!app) return "";
+  const verdict = app.verdict
+    ? `<span class="verdict ${esc(app.verdict)}">${esc(
+        VERDICT_LABEL[app.verdict] || app.verdict
+      )}</span>`
+    : "";
+  return `<div class="screening">
+    <div class="screening-head">
+      <span class="score-inline">${app.score ?? "\u2013"}<small>/100</small></span>
+      ${verdict}
+      <span class="screened-by">screened by ${esc(app.screened_by || "n/a")}</span>
+    </div>
+    <p class="reasoning">${esc(app.reasoning || "Not screened yet.")}</p>
+    ${tags(app.matched_skills, "tag hit")}
+    ${tags(app.missing_skills, "tag miss")}
+    <div class="controls">
+      <select data-status="${app.id}" aria-label="Application status">
+        ${["new", "screened", "shortlisted", "rejected"]
+          .map((st) => `<option value="${st}"${st === app.status ? " selected" : ""}>${st}</option>`)
+          .join("")}
+      </select>
+      <button class="ghost" data-rescreen="${app.id}">Re-screen</button>
+    </div>
+  </div>`;
+}
+
+function driveCard(doc, applicant) {
   const badge = `<span class="badge ${esc(doc.state)}">${esc(doc.state)}</span>`;
 
   if (doc.state !== "parsed") {
@@ -406,6 +408,8 @@ function driveCard(doc) {
           <div class="job-meta">${esc(doc.reason || "Not parsed.")}</div></div>
         ${badge}
       </div>
+      ${appliedRow(applicant)}
+      ${screeningBlock(applicant)}
       ${driveFileRow(doc)}
     </div>`;
   }
@@ -419,8 +423,32 @@ function driveCard(doc) {
       </div>
       ${badge}
     </div>
+    ${appliedRow(applicant)}
+    ${screeningBlock(applicant)}
     <div data-slot="body"></div>
     ${driveFileRow(doc)}
+  </div>`;
+}
+
+/* An applicant row whose file has since been removed from the folder. The
+   application is still a real record, so it is shown rather than dropped. */
+function missingApplicantCard(applicant) {
+  return `<div class="card dcard dim">
+    <div class="job-head">
+      <div>
+        <p class="job-title">${esc((applicant.candidate && applicant.candidate.full_name) || applicant.drive_filename)}</p>
+        <div class="job-meta">This file is no longer in the Drive folder.</div>
+      </div>
+      <span class="badge skipped">missing</span>
+    </div>
+    ${appliedRow(applicant)}
+    ${screeningBlock(applicant)}
+    <div class="filerow">
+      <span>${esc(applicant.drive_filename)}</span>
+      ${applicant.drive_web_link
+        ? `<a href="${esc(applicant.drive_web_link)}" target="_blank" rel="noopener">Open in Drive</a>`
+        : ""}
+    </div>
   </div>`;
 }
 
@@ -452,41 +480,102 @@ async function initDrive() {
   const msg = document.getElementById("banner");
   const button = document.getElementById("refresh");
   const rebuild = document.getElementById("rebuild");
+  const viewSwitch = document.getElementById("view-switch");
   let run = 0; // cancels an in-flight detail sweep when a reload starts
 
-  function renderCounts(data, detailed) {
+  let view = "candidates";
+  let data = null;       // the last Drive listing
+  let applicants = [];   // rows from the applicants table
+  // file_id -> detail, so flipping the switch does not re-run the model on
+  // resumes that have already been read.
+  const details = new Map();
+
+  const byFile = () => new Map(applicants.map((a) => [a.drive_file_id, a]));
+
+  function renderCounts(detailed, shown) {
+    if (!data) return;
     const c = data.counts || {};
     const age = data.cached
       ? `cached ${Math.round((data.age_seconds || 0) / 60)} min ago`
       : "just read from Drive";
+    const head =
+      view === "applicants"
+        ? `<span><b>${shown}</b> applicant${shown === 1 ? "" : "s"}</span>`
+        : `<span><b>${c.parsed || 0}</b> parsed</span>` +
+          (c.skipped ? `<span><b>${c.skipped}</b> skipped</span>` : "") +
+          (c.failed ? `<span><b>${c.failed}</b> failed</span>` : "") +
+          (c.reused ? `<span><b>${c.reused}</b> unchanged, reused</span>` : "") +
+          (c.reparsed ? `<span><b>${c.reparsed}</b> newly parsed</span>` : "");
     countsEl.innerHTML =
-      `<span><b>${c.parsed || 0}</b> parsed</span>` +
-      (c.skipped ? `<span><b>${c.skipped}</b> skipped</span>` : "") +
-      (c.failed ? `<span><b>${c.failed}</b> failed</span>` : "") +
-      (c.reused ? `<span><b>${c.reused}</b> unchanged, reused</span>` : "") +
-      (c.reparsed ? `<span><b>${c.reparsed}</b> newly parsed</span>` : "") +
-      `<span><b>${detailed}</b> of ${c.parsed || 0} detailed</span>` +
+      head +
+      `<span><b>${detailed}</b> of ${shown} detailed</span>` +
       `<span>${esc(age)}</span>`;
+  }
+
+  /* Which documents the current view shows. Candidates is the whole folder;
+     Applicants is only what came in through an application. */
+  function visibleDocs() {
+    if (!data) return [];
+    if (view !== "applicants") return data.documents;
+    const linked = byFile();
+    return data.documents.filter((d) => linked.has(d.file_id));
+  }
+
+  function render() {
+    const linked = byFile();
+    const docs = visibleDocs();
+    let html = docs.map((d) => driveCard(d, linked.get(d.file_id))).join("");
+
+    if (view === "applicants") {
+      const seen = new Set(docs.map((d) => d.file_id));
+      html += applicants
+        .filter((a) => !seen.has(a.drive_file_id))
+        .map(missingApplicantCard)
+        .join("");
+      if (!html) {
+        html = `<div class="empty">No applications have uploaded a resume yet.</div>`;
+      }
+    } else if (!html) {
+      html = `<div class="empty">No documents found in that Drive folder.</div>`;
+    }
+    list.innerHTML = html;
+
+    // Put back everything the model has already told us about these files.
+    let known = 0;
+    for (const doc of docs) {
+      const detail = details.get(doc.file_id);
+      const card = document.getElementById(`doc-${doc.file_id}`);
+      if (detail && card) {
+        renderDetails(card, detail);
+        known += 1;
+      }
+    }
+    renderCounts(known, docs.length);
+    return known;
   }
 
   /* One request at a time: the free Groq tier is capped per minute, and a
      burst of parallel extractions just triggers rate limiting. */
-  async function fillDetails(docs, data, token) {
-    let done = 0;
-    for (const doc of docs) {
+  async function fillDetails(token) {
+    let done = render();
+    for (const doc of visibleDocs()) {
       if (token !== run) return;
+      if (doc.state !== "parsed" || details.has(doc.file_id)) continue;
       const card = document.getElementById(`doc-${doc.file_id}`);
       if (!card) continue;
       try {
         const detail = await api(`/api/drive/documents/${doc.file_id}/details`);
         if (token !== run) return;
-        renderDetails(card, detail);
+        details.set(doc.file_id, detail);
+        // The card can be gone if the view changed under us.
+        const live = document.getElementById(`doc-${doc.file_id}`);
+        if (live) renderDetails(live, detail);
         done += 1;
       } catch (err) {
         const sub = card.querySelector('[data-slot="sub"]');
         if (sub) sub.textContent = `Details unavailable: ${err.message}`;
       }
-      renderCounts(data, done);
+      renderCounts(done, visibleDocs().length);
     }
   }
 
@@ -503,20 +592,24 @@ async function initDrive() {
                    : "Reading resumes from Drive&hellip;"}</div>`;
     button.disabled = true;
     rebuild.disabled = true;
+    if (full) details.clear(); // a rebuild discards the cached extractions
 
     try {
-      const data = force
-        ? await api(`/api/drive/refresh${full ? "?full=true" : ""}`, { method: "POST" })
-        : await api("/api/drive/documents");
+      // The applicants table is cheap and independent of Drive, so it is
+      // fetched alongside rather than only when the switch is flipped.
+      const [listing, applicantData] = await Promise.all([
+        force
+          ? api(`/api/drive/refresh${full ? "?full=true" : ""}`, { method: "POST" })
+          : api("/api/drive/documents"),
+        api("/api/applicants").catch(() => ({ applicants: [] })),
+      ]);
       if (token !== run) return;
 
-      renderCounts(data, 0);
-      list.innerHTML = data.documents.length
-        ? data.documents.map(driveCard).join("")
-        : `<div class="empty">No documents found in that Drive folder.</div>`;
+      data = listing;
+      applicants = applicantData.applicants || [];
 
       // The list is on screen; now fill in what the model has to say.
-      fillDetails(data.documents.filter((d) => d.state === "parsed"), data, token);
+      fillDetails(token);
     } catch (err) {
       list.innerHTML = "";
       banner(msg, err.message);
@@ -525,6 +618,55 @@ async function initDrive() {
       rebuild.disabled = false;
     }
   }
+
+  async function reloadApplicants() {
+    try {
+      const fresh = await api("/api/applicants");
+      applicants = fresh.applicants || [];
+      render();
+    } catch (err) {
+      banner(msg, err.message);
+    }
+  }
+
+  /* Delegated: the cards are rebuilt on every render, so the listeners live
+     on the container rather than on each button. */
+  list.addEventListener("click", async (event) => {
+    const id = event.target.dataset.rescreen;
+    if (!id) return;
+    event.target.disabled = true;
+    try {
+      await api(`/api/applications/${id}/rescreen`, { method: "POST" });
+      await reloadApplicants();
+    } catch (err) {
+      banner(msg, err.message);
+      event.target.disabled = false;
+    }
+  });
+
+  list.addEventListener("change", async (event) => {
+    const id = event.target.dataset.status;
+    if (!id) return;
+    try {
+      await api(`/api/applications/${id}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ status: event.target.value }),
+      });
+      await reloadApplicants();
+    } catch (err) {
+      banner(msg, err.message);
+    }
+  });
+
+  viewSwitch.addEventListener("change", (event) => {
+    if (!event.target.name || event.target.name !== "view") return;
+    view = event.target.value;
+    if (!data) return;
+    // No refetch: the switch is a filter over what is already loaded. Details
+    // still missing for the newly visible cards are fetched on the way past.
+    fillDetails(++run);
+  });
 
   button.addEventListener("click", () => load("check"));
   rebuild.addEventListener("click", () => load("full"));

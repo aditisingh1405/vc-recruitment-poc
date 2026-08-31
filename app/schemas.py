@@ -221,3 +221,33 @@ class DriveStatus(BaseModel):
     counts: Optional[DriveCounts] = None
     files_cached: int = 0
     details_cached: int = 0
+
+
+# --------------------------------------------------------------------------
+# Applicants -- Drive files that arrived through an application
+# --------------------------------------------------------------------------
+class ApplicantRow(BaseModel):
+    """One uploaded resume plus the posting it was submitted against.
+
+    The job is the whole point of this shape: a plain Drive listing knows the
+    file but not what it was applied to, because that lives in the database.
+    """
+
+    model_config = ORM
+
+    id: int
+    drive_file_id: str
+    drive_filename: str
+    drive_web_link: Optional[str] = None
+    generated: bool = False
+    created_at: datetime
+    application_id: Optional[int] = None
+    job: JobSummary
+    candidate: Optional[CandidateSummary] = None
+    # The screening result, so the Applicants view can show the verdict
+    # without a second round of requests. None once an application is deleted.
+    application: Optional[ApplicationRead] = None
+
+
+class ApplicantList(BaseModel):
+    applicants: List[ApplicantRow] = Field(default_factory=list)
