@@ -4,10 +4,16 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
 from app.database import get_db
+from app.dependencies import require_user
 from app.schemas import ApplicantList
 from app.services import applications as application_service
 
-router = APIRouter(prefix="/api/applicants", tags=["applicants"])
+# Applicant rows carry candidate data and screening results.
+router = APIRouter(
+    prefix="/api/applicants",
+    tags=["applicants"],
+    dependencies=[Depends(require_user)],
+)
 
 
 @router.get("", response_model=ApplicantList)

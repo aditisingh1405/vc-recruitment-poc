@@ -4,10 +4,16 @@ from fastapi import APIRouter, Depends, File, Form, UploadFile, status
 from sqlalchemy.orm import Session
 
 from app.database import get_db
+from app.dependencies import require_user
 from app.schemas import CandidateRead
 from app.services import candidates as candidate_service
 
-router = APIRouter(prefix="/api/candidates", tags=["candidates"])
+# Candidate records are resume data, so the whole router needs a session.
+router = APIRouter(
+    prefix="/api/candidates",
+    tags=["candidates"],
+    dependencies=[Depends(require_user)],
+)
 
 
 @router.post("", response_model=CandidateRead, status_code=status.HTTP_201_CREATED)

@@ -1,9 +1,15 @@
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Depends, Query
 
+from app.dependencies import require_user
 from app.schemas import DriveCandidateDetail, DriveDocumentList, DriveStatus
 from app.services import drive_service
 
-router = APIRouter(prefix="/api/drive", tags=["drive"])
+# The resume library is the folder itself -- all of it is candidate data.
+router = APIRouter(
+    prefix="/api/drive",
+    tags=["drive"],
+    dependencies=[Depends(require_user)],
+)
 
 
 @router.get("/status", response_model=DriveStatus)

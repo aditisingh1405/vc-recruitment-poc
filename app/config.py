@@ -21,6 +21,10 @@ class Settings(BaseSettings):
     groq_base_url: str = "https://api.groq.com/openai/v1"
     groq_model: str = "openai/gpt-oss-120b"
 
+    # Sessions. Secure cookies are never stored by a browser on plain http,
+    # so this stays off for localhost and must be turned on behind TLS.
+    session_cookie_secure: bool = False
+
     upload_dir: Path = BASE_DIR / "uploads"
     max_resume_bytes: int = 5 * 1024 * 1024
 

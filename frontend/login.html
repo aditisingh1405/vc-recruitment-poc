@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sign in · VC Recruitment</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body data-page="login">
+  <header class="site">
+    <a href="jobs.html" class="brand">VC Recruitment</a>
+    <nav>
+      <a href="jobs.html">Open roles</a>
+      <a href="recruiter.html">Recruiter</a>
+      <a href="drive.html">Resumes</a>
+    </nav>
+    <a href="/docs" class="apidocs" target="_blank" rel="noopener"
+       aria-label="API documentation" title="API documentation">?</a>
+  </header>
+  <main class="narrow">
+    <h1 id="auth-title">Sign in</h1>
+    <p class="lede" id="auth-lede">Recruiter pages and the resume library need an account. Browsing roles and applying do not.</p>
+    <div id="banner" class="banner"></div>
+
+    <form id="auth-form" class="card">
+      <div id="name-field" hidden>
+        <label for="full_name">Full name</label>
+        <input id="full_name" name="full_name" type="text" autocomplete="name">
+      </div>
+      <label for="email">Email</label>
+      <input id="email" name="email" type="email" autocomplete="email" required>
+      <label for="password">Password <span class="hint" id="pw-hint">&mdash; at least 8 characters</span></label>
+      <input id="password" name="password" type="password" autocomplete="current-password" required minlength="8">
+      <button type="submit" class="submit" id="auth-submit">Sign in</button>
+    </form>
+
+    <p class="switch-line">
+      <span id="switch-text">No account yet?</span>
+      <button type="button" class="linklike" id="switch-mode">Create one</button>
+    </p>
+  </main>
+  <script src="app.js"></script>
+</body>
+</html>

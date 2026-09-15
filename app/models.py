@@ -36,10 +36,19 @@ class Job(Base):
     required_skills: Mapped[List[str]] = mapped_column(JSON, default=list)
     min_years_experience: Mapped[int] = mapped_column(Integer, default=0)
     is_open: Mapped[bool] = mapped_column(Boolean, default=True)
+
+    # Who posted it. Nullable because roles created before accounts existed
+    # have no owner, and because deleting an account should not delete the
+    # roles it posted -- the opening outlives the recruiter's account.
+    created_by_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), index=True
+    )
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
 
+    created_by: Mapped[Optional["User"]] = relationship()
     applications: Mapped[List["Application"]] = relationship(
         back_populates="job", cascade="all, delete-orphan"
     )
@@ -149,3 +158,58 @@ class Applicant(Base):
     job: Mapped["Job"] = relationship()
     application: Mapped[Optional["Application"]] = relationship()
     candidate: Mapped[Optional["Candidate"]] = relationship()
+
+
+class User(Base):
+    """A recruiter account.
+
+    Separate from Candidate on purpose: a candidate is someone a resume is
+    about, a user is someone who signs in. The two never share a row even
+    when they share an email address.
+    """
+
+    __tablename__ = "users"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    email: Mapped[str] = mapped_column(String(255), nullable=False, unique=True, index=True)
+    full_name: Mapped[str] = mapped_column(String(200), nullable=False)
+
+    # Argon2 hash. The plaintext password is never stored or logged.
+    password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
+
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    last_login_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+
+    sessions: Mapped[List["UserSession"]] = relationship(
+        back_populates="user", cascade="all, delete-orphan"
+    )
+
+
+class UserSession(Base):
+    """One signed-in browser.
+
+    Sessions live in the database rather than in a signed cookie so that
+    signing out actually revokes access, and so a password change can drop
+    every other session.
+
+    Only a SHA-256 of the token is stored: the cookie value itself never
+    touches the database, so a leaked dump cannot be replayed as a login.
+    """
+
+    __tablename__ = "user_sessions"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    token_hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True, index=True)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    user: Mapped["User"] = relationship(back_populates="sessions")

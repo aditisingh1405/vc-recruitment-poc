@@ -12,3 +12,11 @@ class Conflict(ValueError):
 
 class Unavailable(RuntimeError):
     """A dependency this feature needs is missing or unreachable. -> 503"""
+
+
+class Unauthorized(PermissionError):
+    """No valid session, or the credentials given are wrong. -> 401"""
+
+
+class Forbidden(PermissionError):
+    """Signed in, but not allowed to touch this particular thing. -> 403"""

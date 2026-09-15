@@ -15,7 +15,8 @@ logger = logging.getLogger(__name__)
 
 def _with_relations(stmt):
     return stmt.options(
-        selectinload(Application.job), selectinload(Application.candidate)
+        selectinload(Application.job).selectinload(Job.created_by),
+        selectinload(Application.candidate),
     )
 
 
@@ -69,7 +70,9 @@ def list_applicants(db: Session, job_id: Optional[int] = None) -> List[Applicant
     cannot: which posting a given file was submitted against.
     """
     stmt = select(Applicant).options(
-        selectinload(Applicant.job),
+        # job.created_by comes along so the view can mark "your role" without
+        # a second round of queries.
+        selectinload(Applicant.job).selectinload(Job.created_by),
         selectinload(Applicant.candidate),
         selectinload(Applicant.application),
     )

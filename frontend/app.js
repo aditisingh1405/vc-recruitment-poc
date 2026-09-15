@@ -6,10 +6,75 @@ async function api(path, options = {}) {
   const res = await fetch(API + path, options);
   if (res.status === 204) return null;
   const body = await res.json().catch(() => ({}));
+  if (res.status === 401 && !path.startsWith("/api/auth/")) {
+    // The session expired or was revoked while the page was open.
+    const next = location.pathname.replace(/^\//, "") + location.search;
+    location.replace(`login.html?next=${encodeURIComponent(next)}&expired=1`);
+    throw new Error("Your session has ended. Please sign in again.");
+  }
   if (!res.ok) {
     throw new Error(body.detail || `Request failed (${res.status})`);
   }
   return body;
+}
+
+/* ------------------------------------------------------------------ */
+/* Accounts                                                            */
+/*                                                                     */
+/* The session is an HTTP-only cookie, so the page cannot read it --    */
+/* it asks the server who is signed in instead. Browsing roles and      */
+/* applying stay open; everything else redirects to the login page.     */
+/* ------------------------------------------------------------------ */
+let SESSION = null;
+
+async function loadSession() {
+  try {
+    const me = await api("/api/auth/me");
+    SESSION = me.user || null;
+  } catch (_) {
+    SESSION = null; // an unreachable server is not a signed-in one
+  }
+  return SESSION;
+}
+
+/** Put the account controls at the right of the tab bar on every page. */
+function renderAccount() {
+  const header = document.querySelector("header.site");
+  if (!header) return;
+  let box = header.querySelector(".account");
+  if (!box) {
+    box = document.createElement("div");
+    box.className = "account";
+    header.insertBefore(box, header.querySelector(".apidocs"));
+  }
+  box.innerHTML = SESSION
+    ? `<span class="whoami" title="${esc(SESSION.email)}">${esc(SESSION.full_name)}</span>
+       <button type="button" class="ghost" id="sign-out">Sign out</button>`
+    : `<a class="ghost button-like" href="login.html?next=${encodeURIComponent(
+        location.pathname.replace(/^\//, "") + location.search
+      )}">Sign in</a>`;
+
+  const out = box.querySelector("#sign-out");
+  if (out) {
+    out.addEventListener("click", async () => {
+      out.disabled = true;
+      try {
+        await api("/api/auth/logout", { method: "POST" });
+      } catch (_) {
+        /* the cookie is gone either way */
+      }
+      location.href = "jobs.html";
+    });
+  }
+}
+
+/** Send an unauthenticated visitor to the login page, remembering where they
+    were headed. Returns false when the caller should stop rendering. */
+function requireSession() {
+  if (SESSION) return true;
+  const next = location.pathname.replace(/^\//, "") + location.search;
+  location.replace(`login.html?next=${encodeURIComponent(next)}`);
+  return false;
 }
 
 const esc = (value) =>
@@ -114,33 +179,56 @@ function applicantCard(app, { recruiter = false } = {}) {
 /* ------------------------------------------------------------------ */
 async function initJobs() {
   const list = document.getElementById("jobs");
-  try {
-    const jobs = await api("/api/jobs?open_only=true");
-    if (!jobs.length) {
-      list.innerHTML =
-        `<div class="empty">No open roles right now.<br>` +
-        `<a href="recruiter.html">Post one from the recruiter view.</a></div>`;
-      return;
-    }
-    list.innerHTML = jobs
-      .map(
-        (job) => `<div class="card">
-          <div class="job-head">
-            <div>
-              <p class="job-title">${esc(job.title)}</p>
-              <div class="job-meta">${jobMeta(job)}</div>
-            </div>
-            <a class="button" href="apply.html?job=${job.id}">Apply</a>
-          </div>
-          <p class="job-desc">${esc(job.description)}</p>
-          ${tags(job.required_skills)}
-        </div>`
-      )
-      .join("");
-  } catch (err) {
-    list.innerHTML = "";
-    banner(document.getElementById("banner"), err.message);
+  const bar = document.getElementById("scope-bar");
+  const scopeSwitch = document.getElementById("scope-switch");
+  let scope = switchValue(scopeSwitch, "all");
+
+  /* Candidates see every open role and no switch -- filtering to one
+     recruiter's postings would hide jobs from the people applying. The switch
+     appears only once someone is signed in. */
+  if (SESSION && bar && scopeSwitch) {
+    bar.hidden = false;
+    scopeSwitch.addEventListener("change", (event) => {
+      if (event.target.name !== "scope") return;
+      scope = event.target.value;
+      load();
+    });
   }
+
+  async function load() {
+    const mine = scope === "mine";
+    try {
+      const jobs = await api(`/api/jobs?open_only=true${mine ? "&mine=true" : ""}`);
+      if (!jobs.length) {
+        list.innerHTML = mine
+          ? `<div class="empty">You have no open roles.<br>` +
+            `<a href="recruiter.html">Post one from the recruiter view.</a></div>`
+          : `<div class="empty">No open roles right now.<br>` +
+            `<a href="recruiter.html">Post one from the recruiter view.</a></div>`;
+        return;
+      }
+      list.innerHTML = jobs
+        .map(
+          (job) => `<div class="card">
+            <div class="job-head">
+              <div>
+                <p class="job-title">${esc(job.title)}</p>
+                <div class="job-meta">${jobMeta(job)}</div>
+              </div>
+              <a class="button" href="apply.html?job=${job.id}">Apply</a>
+            </div>
+            <p class="job-desc">${esc(job.description)}</p>
+            ${tags(job.required_skills)}
+          </div>`
+        )
+        .join("");
+    } catch (err) {
+      list.innerHTML = "";
+      banner(document.getElementById("banner"), err.message);
+    }
+  }
+
+  await load();
 }
 
 /* ------------------------------------------------------------------ */
@@ -293,14 +381,149 @@ async function initApply() {
 /* ------------------------------------------------------------------ */
 /* recruiter.html -- post roles, review ranked applicants              */
 /* ------------------------------------------------------------------ */
+/* A role as the recruiter sees it: who posted it, and whether it is open. */
+/* Only the recruiter who posted a role may change it. Roles with no owner --
+   those created before accounts existed -- belong to nobody and stay
+   read-only, so no one is offered a Delete they have no claim to. */
+function canManage(job) {
+  return Boolean(SESSION && job.created_by && job.created_by.id === SESSION.id);
+}
+
+function recruiterJobCard(job, mine) {
+  /* Two accounts can carry the same person's name, so "yours" is marked
+     rather than spelled out -- the name alone cannot tell them apart. */
+  let owner = "";
+  if (!job.created_by) {
+    owner = `<span class="owner unassigned">unassigned</span>`;
+  } else if (canManage(job)) {
+    owner = mine ? "" : `<span class="mine-flag">You</span>`;
+  } else {
+    owner = `<span class="owner">${esc(job.created_by.full_name)}</span>`;
+  }
+  const controls = canManage(job)
+    ? `<button type="button" class="ghost" data-toggle-open="${job.id}">${
+        job.is_open ? "Close" : "Reopen"
+      }</button>
+       <button type="button" class="ghost danger" data-delete-job="${job.id}">Delete</button>`
+    : "";
+  return `<div class="card${job.is_open ? "" : " dim"}">
+    <div class="job-head">
+      <div>
+        <p class="job-title">${esc(job.title)}</p>
+        <div class="job-meta">${jobMeta(job)}</div>
+      </div>
+      <div class="job-side">
+        ${owner}
+        <a class="button-like" href="apply.html?job=${job.id}">Open</a>
+      </div>
+    </div>
+    ${tags(job.required_skills)}
+    ${controls ? `<div class="controls">${controls}</div>` : ""}
+  </div>`;
+}
+
 async function initRecruiter() {
   const jobForm = document.getElementById("job-form");
   const msg = document.getElementById("banner");
   const formMsg = document.getElementById("form-banner");
+  const rolesEl = document.getElementById("roles");
+  const scopeSwitch = document.getElementById("scope-switch");
+  let scope = switchValue(scopeSwitch, "mine");
+
+  /* Posting is the point of this page, so its handler goes on before anything
+     that could fail. A missing optional element used to throw here and leave
+     the form with no listener at all -- which silently turned Post role into a
+     native GET submission that saved nothing. */
+  jobForm.addEventListener("submit", onSubmit);
 
   await showEngineNotice(msg);
 
-  jobForm.addEventListener("submit", async (event) => {
+  /* "Mine" is the default because a recruiter's own postings are what they
+     came for; "All roles" is there because a team needs to see each other's. */
+  async function loadRoles() {
+    if (!rolesEl) return;
+    const mine = scope === "mine";
+    rolesEl.innerHTML = `<div class="spinner">Loading roles\u2026</div>`;
+    try {
+      const jobs = await api(`/api/jobs${mine ? "?mine=true" : ""}`);
+      if (!jobs.length) {
+        rolesEl.innerHTML = `<div class="empty">${
+          mine
+            ? "You have not posted a role yet. Post one above, or switch to All roles."
+            : "No roles have been posted yet."
+        }</div>`;
+        return;
+      }
+      rolesEl.innerHTML = jobs.map((j) => recruiterJobCard(j, mine)).join("");
+    } catch (err) {
+      rolesEl.innerHTML = "";
+      banner(msg, err.message);
+    }
+  }
+
+  /* Deleting a role takes its applications and applicant rows with it, so the
+     confirmation says exactly how many -- a count is the difference between an
+     informed yes and a surprised one. */
+  async function deleteRole(id, button) {
+    let detail = "";
+    try {
+      const apps = await api(`/api/jobs/${id}/applications`);
+      detail = apps.length
+        ? `\n\nThis role has ${apps.length} application${
+            apps.length === 1 ? "" : "s"
+          }. Deleting it removes ${
+            apps.length === 1 ? "that application" : "those applications"
+          } and their screening results too. Resumes already in Drive are left alone.`
+        : "\n\nIt has no applications.";
+    } catch (_) {
+      detail = "\n\nIts applications will be removed with it.";
+    }
+    if (!confirm(`Delete this role?${detail}\n\nThis cannot be undone.`)) return;
+    button.disabled = true;
+    try {
+      await api(`/api/jobs/${id}`, { method: "DELETE" });
+      await loadRoles();
+    } catch (err) {
+      banner(msg, err.message);
+      button.disabled = false;
+    }
+  }
+
+  async function toggleOpen(id, button, open) {
+    button.disabled = true;
+    try {
+      await api(`/api/jobs/${id}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ is_open: !open }),
+      });
+      await loadRoles();
+    } catch (err) {
+      banner(msg, err.message);
+      button.disabled = false;
+    }
+  }
+
+  if (rolesEl) {
+    rolesEl.addEventListener("click", (event) => {
+      const del = event.target.dataset.deleteJob;
+      if (del) return deleteRole(del, event.target);
+      const toggle = event.target.dataset.toggleOpen;
+      if (toggle) {
+        return toggleOpen(toggle, event.target, event.target.textContent === "Close");
+      }
+    });
+  }
+
+  if (scopeSwitch) {
+    scopeSwitch.addEventListener("change", (event) => {
+      if (event.target.name !== "scope") return;
+      scope = event.target.value;
+      loadRoles();
+    });
+  }
+
+  async function onSubmit(event) {
     event.preventDefault();
     const button = jobForm.querySelector("button");
     button.disabled = true;
@@ -324,12 +547,15 @@ async function initRecruiter() {
       });
       jobForm.reset();
       banner(formMsg, `Posted \u201c${job.title}\u201d.`, "ok");
+      await loadRoles();
     } catch (err) {
       banner(formMsg, err.message);
     } finally {
       button.disabled = false;
     }
-  });
+  }
+
+  await loadRoles();
 }
 
 /* ------------------------------------------------------------------ */
@@ -350,6 +576,20 @@ function driveFileRow(doc) {
     </div>`;
 }
 
+/* Browsers restore radio state across a reload, so the checked input -- not a
+   constant in this file -- is the truth about which way a switch is set. */
+function switchValue(el, fallback) {
+  const checked = el && el.querySelector('input[name]:checked');
+  return checked ? checked.value : fallback;
+}
+
+/* Did this application come in against a role the signed-in recruiter posted?
+   Roles created before accounts existed have no owner and are never "mine". */
+function isMyRole(applicant) {
+  const owner = applicant && applicant.job && applicant.job.created_by;
+  return Boolean(SESSION && owner && owner.id === SESSION.id);
+}
+
 /* Which posting this resume was submitted against -- the one field the
    Applicants view adds. Drive knows the file; only the database knows this. */
 function appliedRow(applicant) {
@@ -362,6 +602,7 @@ function appliedRow(applicant) {
   return `<div class="applied">
       <span class="applied-label">Applied to</span>
       <span class="applied-job">${esc(applicant.job.title)}</span>
+      ${isMyRole(applicant) ? `<span class="mine-flag">Your role</span>` : ""}
       ${applicant.job.location ? `<span class="tag plain">${esc(applicant.job.location)}</span>` : ""}
       ${when ? `<span class="applied-when">${esc(when)}</span>` : ""}
     </div>`;
@@ -483,7 +724,7 @@ async function initDrive() {
   const viewSwitch = document.getElementById("view-switch");
   let run = 0; // cancels an in-flight detail sweep when a reload starts
 
-  let view = "candidates";
+  let view = switchValue(viewSwitch, "candidates");
   let data = null;       // the last Drive listing
   let applicants = [];   // rows from the applicants table
   // file_id -> detail, so flipping the switch does not re-run the model on
@@ -498,9 +739,11 @@ async function initDrive() {
     const age = data.cached
       ? `cached ${Math.round((data.age_seconds || 0) / 60)} min ago`
       : "just read from Drive";
+    const forMe = applicants.filter(isMyRole).length;
     const head =
       view === "applicants"
-        ? `<span><b>${shown}</b> applicant${shown === 1 ? "" : "s"}</span>`
+        ? `<span><b>${shown}</b> applicant${shown === 1 ? "" : "s"}</span>` +
+          (forMe ? `<span class="counts-mine"><b>${forMe}</b> for your roles</span>` : "")
         : `<span><b>${c.parsed || 0}</b> parsed</span>` +
           (c.skipped ? `<span><b>${c.skipped}</b> skipped</span>` : "") +
           (c.failed ? `<span><b>${c.failed}</b> failed</span>` : "") +
@@ -659,7 +902,7 @@ async function initDrive() {
     }
   });
 
-  viewSwitch.addEventListener("change", (event) => {
+  if (viewSwitch) viewSwitch.addEventListener("change", (event) => {
     if (!event.target.name || event.target.name !== "view") return;
     view = event.target.value;
     if (!data) return;
@@ -673,10 +916,116 @@ async function initDrive() {
   await load(null);
 }
 
-document.addEventListener("DOMContentLoaded", () => {
+/* ------------------------------------------------------------------ */
+/* login.html -- one form, two modes                                   */
+/* ------------------------------------------------------------------ */
+function initLogin() {
+  const form = document.getElementById("auth-form");
+  const msg = document.getElementById("banner");
+  const title = document.getElementById("auth-title");
+  const lede = document.getElementById("auth-lede");
+  const nameField = document.getElementById("name-field");
+  const nameInput = document.getElementById("full_name");
+  const password = document.getElementById("password");
+  const submit = document.getElementById("auth-submit");
+  const switchBtn = document.getElementById("switch-mode");
+  const switchText = document.getElementById("switch-text");
+
+  // Only same-page targets: an open redirect would let a crafted link bounce
+  // someone to another site straight after signing in.
+  const raw = qs("next") || "";
+  const next = /^[\w.-]+\.html(\?[^#]*)?$/.test(raw) ? raw : "recruiter.html";
+
+  let mode = "login";
+
+  if (qs("expired")) {
+    banner(msg, "Your session has ended. Please sign in again.", "warn");
+  }
+
+  function render() {
+    const signup = mode === "signup";
+    title.textContent = signup ? "Create an account" : "Sign in";
+    lede.textContent = signup
+      ? "Recruiter accounts can post roles and review applicants. Sign-up is open on this demo."
+      : "Recruiter pages and the resume library need an account. Browsing roles and applying do not.";
+    nameField.hidden = !signup;
+    nameInput.required = signup;
+    submit.textContent = signup ? "Create account" : "Sign in";
+    password.autocomplete = signup ? "new-password" : "current-password";
+    switchText.textContent = signup ? "Already have an account?" : "No account yet?";
+    switchBtn.textContent = signup ? "Sign in" : "Create one";
+    banner(msg, "");
+  }
+
+  switchBtn.addEventListener("click", () => {
+    mode = mode === "login" ? "signup" : "login";
+    render();
+  });
+
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    submit.disabled = true;
+    banner(msg, "");
+    const raw = Object.fromEntries(new FormData(form));
+    try {
+      if (mode === "signup") {
+        await api("/api/auth/signup", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            full_name: raw.full_name,
+            email: raw.email,
+            password: raw.password,
+          }),
+        });
+      } else {
+        await api("/api/auth/login", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ email: raw.email, password: raw.password }),
+        });
+      }
+      location.href = next;
+    } catch (err) {
+      banner(msg, err.message);
+      submit.disabled = false;
+    }
+  });
+
+  render();
+}
+
+/* Pages that expose candidate data or change state. Open roles, apply and the
+   login page itself stay reachable without an account. */
+const GUARDED_PAGES = new Set(["recruiter", "drive"]);
+
+/* One bad element should never take a page down: report it and carry on, so a
+   half-loaded page is visibly wrong rather than quietly inert. */
+function bootPage(page, run) {
+  try {
+    return run();
+  } catch (err) {
+    console.error(`Page "${page}" failed to start:`, err);
+    banner(
+      document.getElementById("banner"),
+      "This page did not load correctly. Reload with Shift held to fetch a fresh copy."
+    );
+  }
+}
+
+document.addEventListener("DOMContentLoaded", async () => {
   const page = document.body.dataset.page;
-  if (page === "jobs") initJobs();
-  if (page === "apply") initApply();
-  if (page === "recruiter") initRecruiter();
-  if (page === "drive") initDrive();
+
+  // Every page asks who is signed in first, so the header is right and a
+  // guarded page redirects before it starts fetching data it cannot have.
+  await loadSession();
+  renderAccount();
+
+  if (GUARDED_PAGES.has(page) && !requireSession()) return;
+
+  if (page === "jobs") bootPage(page, initJobs);
+  if (page === "apply") bootPage(page, initApply);
+  if (page === "recruiter") bootPage(page, initRecruiter);
+  if (page === "drive") bootPage(page, initDrive);
+  if (page === "login") bootPage(page, initLogin);
 });

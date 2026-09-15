@@ -38,16 +38,31 @@ class JobRead(JobBase):
     id: int
     is_open: bool
     created_at: datetime
+    # None for roles posted before accounts existed, or whose owner's account
+    # was deleted. The UI shows those as unassigned rather than hiding them.
+    created_by: Optional["UserSummary"] = None
+
+
+class UserSummary(BaseModel):
+    """The recruiter fields embedded in a job row."""
+
+    model_config = ORM
+
+    id: int
+    full_name: str
 
 
 class JobSummary(BaseModel):
-    """Job fields embedded in an application row."""
+    """Job fields embedded in an application or applicant row."""
 
     model_config = ORM
 
     id: int
     title: str
     location: Optional[str] = None
+    # Lets the Applicants view mark the rows that belong to the signed-in
+    # recruiter. None for roles posted before accounts existed.
+    created_by: Optional["UserSummary"] = None
 
 
 # --------------------------------------------------------------------------
@@ -251,3 +266,39 @@ class ApplicantRow(BaseModel):
 
 class ApplicantList(BaseModel):
     applicants: List[ApplicantRow] = Field(default_factory=list)
+
+
+# --------------------------------------------------------------------------
+# Accounts
+# --------------------------------------------------------------------------
+class SignUpRequest(BaseModel):
+    full_name: str = Field(min_length=1, max_length=200)
+    email: EmailStr
+    password: str = Field(min_length=8, max_length=200)
+
+
+class LoginRequest(BaseModel):
+    email: EmailStr
+    password: str = Field(min_length=1, max_length=200)
+
+
+class PasswordChange(BaseModel):
+    current_password: str = Field(min_length=1, max_length=200)
+    new_password: str = Field(min_length=8, max_length=200)
+
+
+class UserRead(BaseModel):
+    """What the browser is told about the signed-in account. Never the hash."""
+
+    model_config = ORM
+
+    id: int
+    full_name: str
+    email: EmailStr
+    created_at: datetime
+
+
+class SessionRead(BaseModel):
+    """The answer to "who am I" -- null when nobody is signed in."""
+
+    user: Optional[UserRead] = None

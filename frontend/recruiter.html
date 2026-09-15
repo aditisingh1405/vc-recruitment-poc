@@ -8,13 +8,14 @@
 </head>
 <body data-page="recruiter">
   <header class="site">
-    <span class="brand">VC Recruitment</span>
+    <a href="jobs.html" class="brand">VC Recruitment</a>
     <nav>
       <a href="jobs.html">Open roles</a>
       <a href="recruiter.html" class="active">Recruiter</a>
       <a href="drive.html">Resumes</a>
-      <a href="/docs">API</a>
     </nav>
+    <a href="/docs" class="apidocs" target="_blank" rel="noopener"
+       aria-label="API documentation" title="API documentation">?</a>
   </header>
   <main>
     <h1>Recruiter</h1>
@@ -47,6 +48,17 @@
       <p></p>
       <button type="submit">Post role</button>
     </form>
+
+    <div class="toolbar">
+      <h2 class="grow">Roles</h2>
+      <div class="switch" id="scope-switch" role="group" aria-label="Which roles to show">
+        <input type="radio" name="scope" id="scope-mine" value="mine" checked>
+        <label for="scope-mine">Mine</label>
+        <input type="radio" name="scope" id="scope-all" value="all">
+        <label for="scope-all">All roles</label>
+      </div>
+    </div>
+    <div id="roles"><div class="spinner">Loading roles&hellip;</div></div>
 
   </main>
   <script src="app.js"></script>

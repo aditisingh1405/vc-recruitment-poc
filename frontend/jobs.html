@@ -8,18 +8,30 @@
 </head>
 <body data-page="jobs">
   <header class="site">
-    <span class="brand">VC Recruitment</span>
+    <a href="jobs.html" class="brand">VC Recruitment</a>
     <nav>
       <a href="jobs.html" class="active">Open roles</a>
       <a href="recruiter.html">Recruiter</a>
       <a href="drive.html">Resumes</a>
-      <a href="/docs">API</a>
     </nav>
+    <a href="/docs" class="apidocs" target="_blank" rel="noopener"
+       aria-label="API documentation" title="API documentation">?</a>
   </header>
   <main>
     <h1>Open roles</h1>
     <p class="lede">Apply with a PDF resume. It's parsed and scored against the role automatically.</p>
     <div id="banner" class="banner"></div>
+
+    <div class="toolbar" id="scope-bar" hidden>
+      <div class="grow"></div>
+      <div class="switch" id="scope-switch" role="group" aria-label="Which roles to show">
+        <input type="radio" name="scope" id="scope-all" value="all" checked>
+        <label for="scope-all">All open roles</label>
+        <input type="radio" name="scope" id="scope-mine" value="mine">
+        <label for="scope-mine">Mine</label>
+      </div>
+    </div>
+
     <div id="jobs"><div class="spinner">Loading roles…</div></div>
   </main>
   <script src="app.js"></script>

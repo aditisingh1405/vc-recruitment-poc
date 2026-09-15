@@ -4,6 +4,8 @@ from fastapi import APIRouter, Depends, File, Form, Query, UploadFile, status
 from sqlalchemy.orm import Session
 
 from app.database import get_db
+from app.dependencies import require_user
+from app.models import User
 from app.schemas import ApplicationDetail, ApplicationUpdate
 from app.services import Conflict
 from app.services import applications as application_service
@@ -48,6 +50,7 @@ def list_applications(
     job_id: Optional[int] = Query(None),
     candidate_id: Optional[int] = Query(None),
     db: Session = Depends(get_db),
+    _: User = Depends(require_user),
 ):
     return application_service.list_applications(
         db, job_id=job_id, candidate_id=candidate_id
@@ -55,12 +58,20 @@ def list_applications(
 
 
 @router.get("/{application_id}", response_model=ApplicationDetail)
-def get_application(application_id: int, db: Session = Depends(get_db)):
+def get_application(
+    application_id: int,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_user),
+):
     return application_service.get_application(db, application_id)
 
 
 @router.post("/{application_id}/rescreen", response_model=ApplicationDetail)
-def rescreen(application_id: int, db: Session = Depends(get_db)):
+def rescreen(
+    application_id: int,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_user),
+):
     """Re-run screening -- useful after adding a GROQ_API_KEY to a verdict that
     was produced by the keyword fallback."""
     return application_service.rescreen(db, application_id)
@@ -68,7 +79,10 @@ def rescreen(application_id: int, db: Session = Depends(get_db)):
 
 @router.patch("/{application_id}", response_model=ApplicationDetail)
 def update_application(
-    application_id: int, payload: ApplicationUpdate, db: Session = Depends(get_db)
+    application_id: int,
+    payload: ApplicationUpdate,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_user),
 ):
     if payload.status is None:
         raise Conflict("Nothing to update: provide a status.")
@@ -76,5 +90,9 @@ def update_application(
 
 
 @router.delete("/{application_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_application(application_id: int, db: Session = Depends(get_db)):
+def delete_application(
+    application_id: int,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_user),
+):
     application_service.delete_application(db, application_id)
