@@ -23,6 +23,7 @@ import logging
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 import fitz  # pymupdf, already used for uploaded resumes
