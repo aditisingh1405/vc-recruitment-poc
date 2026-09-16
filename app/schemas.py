@@ -163,6 +163,10 @@ class GeneratedResume(BaseModel):
     full_name: Optional[str] = None
     email: Optional[str] = None
     headline: Optional[str] = None
+    # Which role the persona was aimed at, and whether it was built to meet
+    # that role or to miss it. Null when no job was given.
+    aimed_at: Optional[str] = None
+    intended_fit: Optional[bool] = None
     size_bytes: int
     generated_by: str
 

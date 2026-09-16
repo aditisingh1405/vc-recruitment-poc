@@ -33,6 +33,16 @@ GENERATED_PREFIX = "gen_"
 # generate so temp doesn't fill up over a long-running session.
 MAX_AGE_SECONDS = 6 * 60 * 60
 
+# Generation is capped so one click cannot turn into a long wait. Both are
+# deliberately tight: the template fallback is instant and good enough.
+GENERATE_TIMEOUT_SECONDS = 10.0
+GENERATE_MAX_TOKENS = 900
+
+# How often a resume aimed at a job is built to meet it rather than miss it.
+# Weighted towards fits so a demo mostly shows candidates worth discussing,
+# while still producing rejections without having to contrive one.
+FIT_PROBABILITY = 0.7
+
 FIRST = [
     "Aarti", "Rohan", "Meera", "Devika", "Karan", "Sana", "Vikram", "Nisha",
     "Arjun", "Priyanka", "Imran", "Leela", "Tanvi", "Rahul", "Sneha", "Kabir",
@@ -68,10 +78,53 @@ Return ONLY a JSON object:
   location         string
   headline         string, one line
   summary          string, 2 sentences
-  experience       array of 2-3 objects: {title, company, dates, bullets: array of 2-3 strings}
-  skills           array of 8-14 strings
-  education        array of 1-2 strings, "Degree, Institution, Year"
+  experience       array of exactly 2 objects: {title, company, dates, bullets: array of 2 strings}
+  skills           array of strings, exactly as given in the brief
+  education        array of 1 string, "Degree, Institution, Year"
 Write concrete, quantified bullets. Invent every detail; never use a real person."""
+
+
+# Every skill the personas know about, used to build a candidate who is
+# plausibly employable but deliberately wrong for a particular role.
+ALL_SKILLS = sorted({skill for _, _, _, skills in ROLES for skill in skills})
+
+
+def _norm_skill(value: str) -> str:
+    return " ".join(str(value or "").lower().split())
+
+
+def _persona_for(job, fit: bool) -> Dict[str, Any]:
+    """A brief aimed at one job, either meeting its bar or missing it.
+
+    The caller decides which. "Fit" means the resume carries every required
+    skill and clears the experience bar; "miss" means a plausible candidate
+    from a different discipline who does neither. Screening still has the
+    final say -- this loads the dice, it does not decide the verdict.
+    """
+    base = _persona()
+    required = [s for s in (job.required_skills or []) if str(s).strip()]
+    needed = job.min_years_experience or 0
+
+    if fit:
+        # Lead with what the role asks for, then pad with neighbouring skills
+        # so the resume does not read as a checklist.
+        extras = [s for s in base["skills"] if _norm_skill(s) not in
+                  {_norm_skill(r) for r in required}]
+        base["skills"] = required + extras[:3]
+        base["years"] = random.randint(max(needed, 1), max(needed, 1) + 4)
+        base["title"] = job.title
+    else:
+        off_limits = {_norm_skill(r) for r in required}
+        pool = [s for s in ALL_SKILLS if _norm_skill(s) not in off_limits]
+        base["skills"] = random.sample(pool, min(6, len(pool))) if pool else []
+        # Short of the bar when there is one, junior when there is not.
+        base["years"] = random.randint(0, needed - 1) if needed else random.randint(1, 3)
+        others = [r for r in ROLES if r[0] != job.title]
+        base["title"] = random.choice(others or ROLES)[0]
+
+    base["aimed_at"] = job.title
+    base["intended_fit"] = fit
+    return base
 
 
 def _persona() -> Dict[str, Any]:
@@ -200,17 +253,27 @@ def _sweep() -> None:
         logger.warning("Could not sweep generated resumes: %s", exc)
 
 
-def generate() -> Dict[str, Any]:
+def generate(job=None) -> Dict[str, Any]:
     """Create one resume and save it under the temp directory.
+
+    Given a job, FIT_PROBABILITY of the resumes are built to meet it and the
+    rest to miss it, so a demo shows both outcomes instead of a run of
+    rejections. Without a job the persona is random, as before.
 
     Returns the token used to fetch it back, plus enough detail for the form to
     show what was made.
     """
     _sweep()
-    persona = _persona()
+    if job is not None:
+        persona = _persona_for(job, fit=random.random() < FIT_PROBABILITY)
+    else:
+        persona = _persona()
     engine = "rules"
 
     if settings.llm_enabled:
+        # The skills have to be in the brief, not just the persona: without
+        # them the model invents its own and any targeting is lost.
+        wanted = ", ".join(persona["skills"]) or "general commercial skills"
         brief = (
             f"Write a resume for a fictional {persona['title']} with about "
             f"{persona['years']} years of experience in {persona['sector']}. "
@@ -218,14 +281,24 @@ def generate() -> Dict[str, Any]:
             f"Phone: {persona['phone']}. Location: {persona['location']}. "
             f"Most recent employer: {persona['firm']}. "
             f"Earlier employer: {persona['prior_firm']}. "
-            f"Education at {persona['school']}."
+            f"Education at {persona['school']}. "
+            f"The skills list must be exactly these, in this order: {wanted}. "
+            f"Demonstrate them in the experience bullets, and do not add "
+            f"skills beyond this list."
         )
         try:
             # Temperature is high on purpose: two clicks should not produce the
             # same resume, which is the opposite of what extraction wants.
-            response = llm_service._client().chat.completions.create(
+            # A simulated resume is a convenience, not the product. The shared
+            # client retries a rate limit five times with backoff, which turned
+            # one click into a 40-second wait; here it is better to give up
+            # quickly and render the template instead.
+            response = llm_service._client().with_options(
+                timeout=GENERATE_TIMEOUT_SECONDS, max_retries=1
+            ).chat.completions.create(
                 model=settings.groq_model,
                 temperature=1.0,
+                max_tokens=GENERATE_MAX_TOKENS,
                 response_format={"type": "json_object"},
                 messages=[
                     {"role": "system", "content": SYSTEM},
@@ -269,6 +342,8 @@ def generate() -> Dict[str, Any]:
         "headline": data.get("headline"),
         "size_bytes": len(pdf),
         "generated_by": engine,
+        "aimed_at": persona.get("aimed_at"),
+        "intended_fit": persona.get("intended_fit"),
     }
 
 

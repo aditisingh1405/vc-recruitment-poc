@@ -314,7 +314,12 @@ async function initApply() {
     simNote.className = "simnote";
     simNote.textContent = "Writing a resume\u2026";
     try {
-      const info = await api("/api/simulate/resume", { method: "POST" });
+      // Aim the persona at this role: roughly 70% of simulated candidates
+      // are built to fit it, the rest to miss it.
+      const info = await api(
+        `/api/simulate/resume?job_id=${encodeURIComponent(jobId)}`,
+        { method: "POST" }
+      );
       generated = true;
       await attachGeneratedResume(fileInput, info);
       // Fill the form from the same persona the PDF was rendered from, so
@@ -328,11 +333,17 @@ async function initApply() {
         emailInput.dataset.simulated = "1";
       }
       simNote.className = "simnote ok";
+      const aim =
+        info.intended_fit === true
+          ? " Built to fit this role."
+          : info.intended_fit === false
+          ? " Built not to fit this role."
+          : "";
       simNote.textContent =
         `Filled in ${info.full_name || "candidate"}` +
         `${info.email ? " <" + info.email + ">" : ""}` +
         `${info.headline ? ", " + info.headline : ""} ` +
-        `and attached ${info.filename}. ` +
+        `and attached ${info.filename}.${aim} ` +
         `It will be uploaded to Drive on submit.`;
     } catch (err) {
       generated = false;
