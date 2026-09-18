@@ -294,6 +294,19 @@ async function initApply() {
   const simNote = document.getElementById("sim-note");
   let generated = false;
 
+  // Simulate is a demo shortcut, not something to offer a real candidate, so
+  // the button starts hidden (see apply.html) and a press of Shift brings it
+  // out. It stays out once revealed -- a button that vanished on key-up could
+  // never be clicked. Shift used to type a capital letter does not count.
+  document.addEventListener("keydown", (event) => {
+    if (event.key !== "Shift" || !simulate.hidden) return;
+    const el = event.target;
+    if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable)) {
+      return;
+    }
+    simulate.hidden = false;
+  });
+
   // Clear only the fields Simulate filled, so a value the candidate typed
   // themselves is never wiped out from under them.
   function clearSimulated() {
