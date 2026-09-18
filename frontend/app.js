@@ -295,16 +295,31 @@ async function initApply() {
   let generated = false;
 
   // Simulate is a demo shortcut, not something to offer a real candidate, so
-  // the button starts hidden (see apply.html) and a press of Shift brings it
-  // out. It stays out once revealed -- a button that vanished on key-up could
-  // never be clicked. Shift used to type a capital letter does not count.
+  // the button starts hidden (see apply.html) and Shift toggles it: a press
+  // brings it out, another press puts it away.
+  //
+  // Only Shift pressed on its own counts, which is decided on the way up --
+  // Shift held to type a capital, to Shift+Tab through the form, or to
+  // Shift+click is a modifier, and a modifier should not move the furniture.
+  let shiftAlone = false;
+
   document.addEventListener("keydown", (event) => {
-    if (event.key !== "Shift" || !simulate.hidden) return;
-    const el = event.target;
-    if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable)) {
+    if (event.key === "Shift") {
+      // Holding Shift down repeats the event; the first one is the press.
+      if (!event.repeat) shiftAlone = true;
       return;
     }
-    simulate.hidden = false;
+    shiftAlone = false;
+  });
+
+  document.addEventListener("mousedown", () => {
+    shiftAlone = false;
+  });
+
+  document.addEventListener("keyup", (event) => {
+    if (event.key !== "Shift" || !shiftAlone) return;
+    shiftAlone = false;
+    simulate.hidden = !simulate.hidden;
   });
 
   // Clear only the fields Simulate filled, so a value the candidate typed
