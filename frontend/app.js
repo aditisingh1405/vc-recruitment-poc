@@ -37,6 +37,14 @@ async function loadSession() {
   return SESSION;
 }
 
+/* The tabs behind an account are marked hidden in the HTML and revealed here,
+   so a visitor never sees a tab that would only bounce them to the login page. */
+function renderNav() {
+  for (const link of document.querySelectorAll('header.site [data-auth="required"]')) {
+    link.hidden = !SESSION;
+  }
+}
+
 /** Put the account controls at the right of the tab bar on every page. */
 function renderAccount() {
   const header = document.querySelector("header.site");
@@ -1030,6 +1038,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   // Every page asks who is signed in first, so the header is right and a
   // guarded page redirects before it starts fetching data it cannot have.
   await loadSession();
+  renderNav();
   renderAccount();
 
   if (GUARDED_PAGES.has(page) && !requireSession()) return;
